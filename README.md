@@ -2,6 +2,7 @@
 
 A desktop app (Windows/macOS/Linux) for downloading and processing media, built with Python, [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter), and [yt-dlp](https://github.com/yt-dlp/yt-dlp). Everything lives in one window across four tabs.
 
+
 > For personal use — downloading content you have the right to download. Don't use this to redistribute copyrighted material.
 
 ## Features
@@ -58,6 +59,10 @@ python main.py
 ```
 .
 ├── main.py                  # Entry point — launches the window and all tabs
+├── Assets/
+│   ├── icon.ico              # App icon (Windows)
+│   ├── icon.icns              # App icon (macOS)
+│   └── icon.png                # App icon (Linux / window titlebar & taskbar, all platforms)
 ├── Config/
 │   ├── app_settings.py      # Shared app-wide settings (theme, subtitles, speed limit, etc.)
 │   ├── config.py            # YouTube tab settings persistence
@@ -74,19 +79,28 @@ python main.py
     ├── history_window.py    # History viewer window
     ├── context_menu.py      # Right-click Cut/Copy/Paste/Select All for text fields
     ├── theme.py              # Color palette + UI scaling
-    └── utils.py              # Shared helpers (ffmpeg lookup, retry logic, etc.)
+    └── utils.py              # Shared helpers (ffmpeg lookup, app icon, retry logic, etc.)
 ```
 
 ## Building a standalone executable
 
-Packaged with [PyInstaller](https://pyinstaller.org/):
+Packaged with [PyInstaller](https://pyinstaller.org/). The `Assets` folder (app icon) needs to be bundled in via `--add-data`, and `--icon` sets the exe's own icon.
 
+**Windows:**
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --name "MediaDownloaderToolkit" main.py
+pyinstaller --onefile --windowed --name "MediaDownloaderToolkit" ^
+  --icon "Assets/icon.ico" --add-data "Assets;Assets" main.py
 ```
 
-> **Note:** `--onefile` bundles everything into a single self-extracting exe, which some antivirus heuristics flag as a "dropper" pattern (false positive — see [Troubleshooting](#troubleshooting)). Using `--onedir` instead avoids that at the cost of shipping a folder instead of one file.
+**macOS/Linux:**
+```bash
+pip install pyinstaller
+pyinstaller --onefile --windowed --name "MediaDownloaderToolkit" \
+  --icon "Assets/icon.icns" --add-data "Assets:Assets" main.py
+```
+
+> **Note:** `--onefile` bundles everything into a single self-extracting exe, which some antivirus heuristics flag as a "dropper" pattern (false positive — see [Troubleshooting](#troubleshooting)). Using `--onedir` instead avoids that at the cost of shipping a folder instead of one file. Either way, the `--add-data` flag above still applies.
 
 ## Troubleshooting
 

@@ -11,6 +11,7 @@ from Script.other_sites_tab import OtherSitesTab
 from Script.normalizer_tab import NormalizerTab
 from Script.converter_tab import ConverterTab
 from Script.settings_dialog import open_settings_window
+from Script.utils import set_app_icon
 
 
 def main():
@@ -20,6 +21,7 @@ def main():
     root.title("Media Downloader Toolkit")
     root.geometry("760x720")
     root.configure(fg_color=theme.BG)
+    set_app_icon(root)
 
     settings = AppSettings(root)
     ctk.set_appearance_mode("Dark" if settings.dark_mode.get() else "Light")

@@ -5,6 +5,7 @@ import sys
 import shutil
 import platform
 import subprocess
+import tkinter as tk
 from urllib.parse import urlparse, parse_qs
 
 MAX_RETRIES = 3
@@ -29,6 +30,47 @@ def get_app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_bundle_dir():
+    """Directory holding resources packaged *into* the app itself (currently
+    just Assets/, for the window icon) -- distinct from get_app_dir() above,
+    which locates files a user drops next to the exe afterward (like a
+    standalone ffmpeg binary). PyInstaller extracts anything added via
+    --add-data to sys._MEIPASS at runtime for both --onefile and --onedir
+    builds; running from source, Assets/ sits next to main.py at the project
+    root, one level up from this Script/ folder."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return meipass
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def set_app_icon(root):
+    """Sets the window/taskbar icon from Assets/icon.*, best-effort since Tk's
+    icon support differs by platform: .ico via iconbitmap (Windows only --
+    other platforms' Tk builds generally can't read .ico), and .png via
+    iconphoto everywhere else (including as a fallback on Windows for window
+    managers/taskbars that don't pick up iconbitmap). Missing/unreadable
+    files are silently skipped so a packaging hiccup never blocks launch."""
+    assets_dir = os.path.join(get_bundle_dir(), "Assets")
+
+    if platform.system() == "Windows":
+        ico_path = os.path.join(assets_dir, "icon.ico")
+        if os.path.isfile(ico_path):
+            try:
+                root.iconbitmap(ico_path)
+            except Exception:
+                pass
+
+    png_path = os.path.join(assets_dir, "icon.png")
+    if os.path.isfile(png_path):
+        try:
+            icon_image = tk.PhotoImage(file=png_path)
+            root.iconphoto(True, icon_image)
+            root._icon_image_ref = icon_image  # keep a reference so Tk doesn't garbage-collect it
+        except Exception:
+            pass
 
 
 def _bundled_ffmpeg_path():
