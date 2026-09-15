@@ -1,0 +1,5 @@
+customtkinter>=5.2.0
+yt-dlp>=2024.1.0
+pydub>=0.25.1
+pyloudnorm>=0.1.1
+numpy>=1.24.0
