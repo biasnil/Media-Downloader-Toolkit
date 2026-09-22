@@ -46,6 +46,51 @@ def get_bundle_dir():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+APP_FOLDER_NAME = "Media Downloader Toolkit"
+
+
+def get_config_dir():
+    """Cross-platform per-user directory for this app's own data --
+    settings, saved credentials, history -- consolidated under one named
+    folder instead of loose dotfiles scattered directly in the home
+    directory (the previous approach: .yt_audio_downloader_config.json,
+    .insta_downloader_config.json, etc. sitting right in ~).
+      Windows: %APPDATA%\\Media Downloader Toolkit
+      macOS:   ~/Library/Application Support/Media Downloader Toolkit
+      Linux:   $XDG_CONFIG_HOME/Media Downloader Toolkit (or ~/.config/... )
+    Creates the directory if it doesn't exist yet. Best-effort: if creating
+    it somehow fails (e.g. a locked-down environment), falls back to the
+    home directory itself rather than raising, since a missing config
+    folder shouldn't be able to crash the app on launch."""
+    system = platform.system()
+    if system == "Windows":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif system == "Darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+
+    path = os.path.join(base, APP_FOLDER_NAME)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        return os.path.expanduser("~")
+    return path
+
+
+def migrate_legacy_file(old_path, new_path):
+    """One-time upgrade helper: if a pre-%appdata% dotfile config/history
+    still exists at old_path and nothing has been written to the new
+    consolidated location yet, copy it over so existing settings/history
+    survive the move to get_config_dir(). Best-effort -- never raises, and
+    never overwrites something already at new_path."""
+    try:
+        if os.path.isfile(old_path) and not os.path.isfile(new_path):
+            shutil.copy2(old_path, new_path)
+    except Exception:
+        pass
+
+
 def set_app_icon(root):
     """Sets the window/taskbar icon from Assets/icon.*, best-effort since Tk's
     icon support differs by platform: .ico via iconbitmap (Windows only --
@@ -135,31 +180,48 @@ def is_transient_error(message):
 
 
 def url_has_playlist_param(url):
-    """True if the URL's query string includes a 'list=' parameter -- e.g. a
-    'watch?v=X&list=Y&index=N' link to one video within a playlist, not just
-    a plain 'playlist?list=Y' link. yt-dlp's own default handling of the
-    watch+list combination has been inconsistent across versions/reports
-    (sometimes only the single video, sometimes the whole playlist), so the
-    app forces playlist mode explicitly whenever this parameter is present
-    rather than relying on that default."""
+    """True if the URL's query string includes a 'list=' parameter for a
+    genuine, enumerable playlist -- e.g. a 'watch?v=X&list=PLxxxx&index=N'
+    link to one video within a saved playlist, not just a plain
+    'playlist?list=Y' link. yt-dlp's own default handling of the watch+list
+    combination has been inconsistent across versions/reports (sometimes
+    only the single video, sometimes the whole playlist), so the app forces
+    playlist mode explicitly whenever this parameter is present rather than
+    relying on that default.
+
+    Deliberately excludes YouTube's auto-generated "RD"-prefixed Radio/Mix
+    lists (e.g. '&list=RDvideoId&start_radio=1'): those aren't a real
+    playlist with enumerable contents -- they only exist in the context of
+    the original watch URL -- so probing them via a bare playlist URL fails
+    with YouTube's own "This playlist type is unviewable" error. Those are
+    left alone here, falling through to yt-dlp's normal single-video
+    handling instead, same as before this playlist-forcing behavior was
+    added."""
     try:
         query = parse_qs(urlparse(url).query)
     except Exception:
         return False
-    return bool(query.get("list"))
+    list_ids = query.get("list")
+    if not list_ids:
+        return False
+    return not list_ids[0].startswith("RD")
 
 
 def canonical_playlist_url(url):
     """Returns a plain 'playlist?list=ID' URL if the given URL has a list
-    parameter, else None. Used to probe the *complete* playlist rather than
-    whatever partial view a 'watch?v=X&list=Y&index=N' link would otherwise
-    give (e.g. starting from the pasted video's position instead of item 1)."""
+    parameter for a genuine playlist, else None. Used to probe the
+    *complete* playlist rather than whatever partial view a
+    'watch?v=X&list=Y&index=N' link would otherwise give (e.g. starting
+    from the pasted video's position instead of item 1). Returns None for
+    an "RD"-prefixed Radio/Mix id too, same reasoning as
+    url_has_playlist_param above -- there's no standalone playlist page for
+    one of those to probe."""
     try:
         query = parse_qs(urlparse(url).query)
     except Exception:
         return None
     list_ids = query.get("list")
-    if not list_ids:
+    if not list_ids or list_ids[0].startswith("RD"):
         return None
     return f"https://www.youtube.com/playlist?list={list_ids[0]}"
 

@@ -1,6 +1,8 @@
 """The Music Loudness Normalizer tab."""
 
 import os
+import shutil
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import messagebox, filedialog
@@ -63,6 +65,40 @@ def match_target_loudness(sound, target_lufs):
     except Exception:
         gain_db = target_lufs - sound.dBFS
     return sound.apply_gain(gain_db)
+
+
+def _ffmpeg_binary():
+    return get_ffmpeg_location() or shutil.which("ffmpeg") or "ffmpeg"
+
+
+def _copy_metadata(source_path, normalized_audio_path, final_path):
+    """Remuxes normalized_audio_path's audio stream together with
+    source_path's own metadata (title/artist/album/etc., plus embedded
+    cover art if present) into final_path, with -c copy so the
+    already-normalized audio itself is never re-encoded a second time.
+
+    Needed because pydub's from_file()/export() (used to do the actual
+    loudness normalization) only ever handles raw audio samples -- it
+    doesn't read or carry over a file's tags at all, so without this step
+    every normalized file would come out with none of its original
+    metadata. -map 1:v? pulls over any attached-picture stream (cover art
+    shows up to ffmpeg as a video stream); the "?" makes it a no-op rather
+    than an error on formats/files that don't have one."""
+    cmd = [
+        _ffmpeg_binary(), "-y",
+        "-i", normalized_audio_path,
+        "-i", source_path,
+        "-map", "0:a",
+        "-map", "1:v?",
+        "-map_metadata", "1",
+        "-c", "copy",
+        final_path,
+    ]
+    subprocess.run(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        check=True,
+    )
 
 
 class NormalizerTab:
@@ -244,15 +280,27 @@ class NormalizerTab:
         for i, path in enumerate(files, start=1):
             name = os.path.basename(path)
             self._set_status(f"Processing {name} ({i}/{len(files)})")
+            out_path = os.path.join(out_dir, name)
+            tmp_path = out_path + ".normalizing" + os.path.splitext(name)[1]
             try:
                 ext = os.path.splitext(path)[1].lower().lstrip(".")
                 sound = AudioSegment.from_file(path)
                 normalized = match_target_loudness(sound, target_lufs)
-                out_path = os.path.join(out_dir, name)
                 export_format = "mp4" if ext in ("m4a", "aac") else ext
-                normalized.export(out_path, format=export_format)
+                normalized.export(tmp_path, format=export_format)
+                try:
+                    _copy_metadata(path, tmp_path, out_path)
+                except Exception:
+                    # Metadata remux failed (an unusual format/tag
+                    # combination, say) -- still keep the normalized audio
+                    # itself rather than losing the whole file over it,
+                    # just without its original tags this time.
+                    shutil.move(tmp_path, out_path)
             except Exception as exc:  # noqa: BLE001 - report any failure to the user
                 errors.append(f"{name}: {exc}")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
             self._set_progress(i / len(files))
 
         if errors:

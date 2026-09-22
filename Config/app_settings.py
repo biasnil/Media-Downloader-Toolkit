@@ -4,7 +4,11 @@ import os
 import json
 import tkinter as tk
 
-CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".media_toolkit_settings.json")
+from Script.utils import get_config_dir, migrate_legacy_file
+
+_LEGACY_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".media_toolkit_settings.json")
+CONFIG_PATH = os.path.join(get_config_dir(), "app_settings.json")
+migrate_legacy_file(_LEGACY_CONFIG_PATH, CONFIG_PATH)
 
 
 def load_app_settings():
@@ -51,6 +55,21 @@ class AppSettings:
         self.max_concurrent_downloads = tk.StringVar(
             master=root, value=str(data.get("max_concurrent_downloads", 1))
         )
+        # Spotify tab: how confident a YouTube match must be (0-100) to
+        # download automatically without asking; below this, the
+        # continue/skip/retry prompt appears instead. See
+        # Script/spotify_match.py for how the score itself is computed.
+        self.spotify_confidence_threshold = tk.StringVar(
+            master=root, value=str(data.get("spotify_confidence_threshold", 80))
+        )
+        # Spotify tab: comma-separated suffixes appended to each search
+        # query variant (e.g. "Track Artist <tag>"). Defaults match the
+        # app's original built-in pair; editing this replaces them entirely
+        # rather than adding to them, so search stays predictable.
+        self.spotify_search_tags = tk.StringVar(
+            master=root,
+            value=data.get("spotify_search_tags", "(Official Music Video), (Official Lyric Video)"),
+        )
 
     def save(self):
         save_app_settings({
@@ -61,4 +80,6 @@ class AppSettings:
             "speed_limit": self.speed_limit.get(),
             "ui_scale": self.ui_scale.get(),
             "max_concurrent_downloads": self.max_concurrent_downloads.get(),
+            "spotify_confidence_threshold": self.spotify_confidence_threshold.get(),
+            "spotify_search_tags": self.spotify_search_tags.get(),
         })

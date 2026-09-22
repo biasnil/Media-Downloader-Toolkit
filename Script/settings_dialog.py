@@ -143,4 +143,43 @@ def open_settings_window(root, settings):
         wraplength=400, justify="left",
     ).pack(anchor="w", padx=16, pady=(2, 0))
 
+    section_label("Spotify")
+    ctk.CTkLabel(
+        scroll,
+        text="Applies to the Spotify tab's YouTube matching.",
+        text_color=theme.TEXT_MUTED, font=ctk.CTkFont(size=11), anchor="w",
+    ).pack(anchor="w", padx=16)
+    confidence_row = ctk.CTkFrame(scroll, fg_color="transparent")
+    confidence_row.pack(fill="x", padx=16, pady=(4, 0))
+    ctk.CTkLabel(
+        confidence_row, text="Confidence:", text_color=theme.TEXT, width=90, anchor="w",
+    ).pack(side="left")
+    confidence_entry = ctk.CTkEntry(
+        confidence_row, width=60, textvariable=settings.spotify_confidence_threshold,
+        fg_color=theme.SURFACE, text_color=theme.TEXT, border_color=theme.BORDER,
+    )
+    confidence_entry.pack(side="left")
+    add_context_menu(confidence_entry)
+    ctk.CTkLabel(
+        confidence_row, text="%  (default 80) -- a match below this asks before downloading",
+        text_color=theme.TEXT_MUTED, font=ctk.CTkFont(size=11),
+    ).pack(side="left", padx=6)
+
+    tags_row = ctk.CTkFrame(scroll, fg_color="transparent")
+    tags_row.pack(fill="x", padx=16, pady=(8, 0))
+    ctk.CTkLabel(tags_row, text="Search tags:", text_color=theme.TEXT, width=90, anchor="w").pack(side="left")
+    tags_entry = ctk.CTkEntry(
+        tags_row, textvariable=settings.spotify_search_tags, fg_color=theme.SURFACE,
+        text_color=theme.TEXT, border_color=theme.BORDER,
+    )
+    tags_entry.pack(side="left", fill="x", expand=True)
+    add_context_menu(tags_entry)
+    ctk.CTkLabel(
+        scroll,
+        text="Comma-separated. Each is tried appended to \"Track Artist\" and \"Artist Track\" -- "
+             "replaces the built-in pair entirely rather than adding to it.",
+        text_color=theme.TEXT_MUTED, font=ctk.CTkFont(size=11), anchor="w",
+        wraplength=400, justify="left",
+    ).pack(anchor="w", padx=16, pady=(2, 0))
+
     win.protocol("WM_DELETE_WINDOW", win.destroy)

@@ -1,6 +1,7 @@
 """Entry point. Run this file to launch the Media Downloader Toolkit —
-YouTube, Other Sites (Instagram/X/Reddit/TikTok/etc.), the Loudness
-Normalizer, and the Format Converter, all in one window."""
+YouTube, Other Sites (Instagram/X/Reddit/TikTok/etc.), Spotify (via
+best-match YouTube search), the Loudness Normalizer, and the Format
+Converter, all in one window."""
 
 import customtkinter as ctk
 
@@ -8,6 +9,7 @@ import Script.theme as theme
 from Config.app_settings import AppSettings
 from Script.youtube_tab import YouTubeTab
 from Script.other_sites_tab import OtherSitesTab
+from Script.spotify_tab import SpotifyTab
 from Script.normalizer_tab import NormalizerTab
 from Script.converter_tab import ConverterTab
 from Script.settings_dialog import open_settings_window
@@ -69,11 +71,13 @@ def main():
 
     youtube_frame = tabview.add("YouTube")
     other_sites_frame = tabview.add("Other Sites")
+    spotify_frame = tabview.add("Spotify")
     normalizer_frame = tabview.add("Normalizer")
     converter_frame = tabview.add("Converter")
 
     YouTubeTab(youtube_frame, root, settings)
     OtherSitesTab(other_sites_frame, root, settings)
+    SpotifyTab(spotify_frame, root, settings)
     NormalizerTab(normalizer_frame, root)
     ConverterTab(converter_frame, root)
 

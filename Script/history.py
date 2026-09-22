@@ -4,7 +4,11 @@ import os
 import json
 import time
 
-HISTORY_PATH = os.path.join(os.path.expanduser("~"), ".yt_audio_downloader_history.jsonl")
+from Script.utils import get_config_dir, migrate_legacy_file
+
+_LEGACY_HISTORY_PATH = os.path.join(os.path.expanduser("~"), ".yt_audio_downloader_history.jsonl")
+HISTORY_PATH = os.path.join(get_config_dir(), "history.jsonl")
+migrate_legacy_file(_LEGACY_HISTORY_PATH, HISTORY_PATH)
 
 
 def log_history_entry(entry):

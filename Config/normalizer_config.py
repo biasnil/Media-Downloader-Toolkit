@@ -3,7 +3,11 @@
 import os
 import json
 
-CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".loudness_normalizer_config.json")
+from Script.utils import get_config_dir, migrate_legacy_file
+
+_LEGACY_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".loudness_normalizer_config.json")
+CONFIG_PATH = os.path.join(get_config_dir(), "normalizer_config.json")
+migrate_legacy_file(_LEGACY_CONFIG_PATH, CONFIG_PATH)
 DEFAULT_TARGET_LUFS = -14.0  # common streaming-loudness target
 
 

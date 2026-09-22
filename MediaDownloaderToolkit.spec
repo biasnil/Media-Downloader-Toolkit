@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller build spec for Media Downloader Toolkit.
+"""PyInstaller build spec for Media Downloader Toolkit (YouTube, Other
+Sites, Spotify, Normalizer, and Converter tabs).
 
 Usage:
     pyinstaller MediaDownloaderToolkit.spec
@@ -8,6 +9,12 @@ Run this from the project root (the folder containing main.py, Assets/,
 Config/, and Script/) -- either directly or via build.bat, which does that
 for you. Produces dist/MediaDownloaderToolkit.exe as a single file, with the
 Assets folder (app icon) bundled inside it.
+
+The Spotify tab (Script/spotify_*.py, Config/spotify_config.py) needs no
+entries here: every import it uses is either the stdlib (csv, zipfile,
+urllib.*, http.server, hashlib, base64, secrets, etc. -- all plain,
+non-dynamic imports PyInstaller's own static analysis already follows) or
+yt_dlp/customtkinter, both already covered below.
 
 To switch from a single exe to a folder build (see the README's
 Troubleshooting section on antivirus false positives with --onefile),

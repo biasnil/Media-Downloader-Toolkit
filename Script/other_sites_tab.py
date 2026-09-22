@@ -263,7 +263,21 @@ class OtherSitesTab:
             })
         else:
             ydl_opts.update({
-                "format": "bestvideo+bestaudio/best",
+                # Explicitly prefer H.264 video + AAC audio (vcodec^=avc1,
+                # acodec^=mp4a) -- unlike the YouTube tab, this site's
+                # "best" stream is very often VP9 or AV1 (common on
+                # Instagram/TikTok/etc.), which still merges into a
+                # technically-valid .mp4 file but plays or sends nowhere
+                # near as reliably: WhatsApp in particular only supports
+                # H.264/AAC and silently rejects or mishandles anything
+                # else, even inside a correct .mp4 container. Falls back to
+                # the old unconstrained selection only if the site genuinely
+                # has no H.264 option at all.
+                "format": (
+                    "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[acodec^=mp4a][ext=m4a]/"
+                    "best[vcodec^=avc1][ext=mp4]/"
+                    "bestvideo+bestaudio/best"
+                ),
                 "merge_output_format": "mp4",
                 "postprocessors": [],
             })
