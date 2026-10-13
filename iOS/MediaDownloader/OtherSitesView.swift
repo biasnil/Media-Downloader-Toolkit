@@ -13,6 +13,8 @@ struct OtherSitesView: View {
     @AppStorage("saveVideosToPhotos") private var saveVideosToPhotos = false
     @AppStorage("notify") private var notify = true
 
+    @State private var report: ProblemReport?
+
     private var busy: Bool { manager.isRunning }
 
     var body: some View {
@@ -32,23 +34,24 @@ struct OtherSitesView: View {
             .padding(16)
         }
         .scrollDismissesKeyboard(.interactively)
+        .reportProblem($report)
         .background(Color.appBackground)
     }
 
     private var urlSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                SectionLabel("Link(s), one per line")
+                SectionLabel(AppText.OtherSites.linksLabel)
                 Spacer()
                 Menu {
-                    Section("Supported sites") {
+                    Section(AppText.OtherSites.supportedSites) {
                         ForEach(Sites.supportedList, id: \.self) { Text($0) }
                     }
                 } label: {
-                    Label("Sites", systemImage: "chevron.down.circle")
+                    Label(AppText.OtherSites.sites, systemImage: "chevron.down.circle")
                         .font(.footnote.bold())
                 }
-                Button("Paste") {
+                Button(AppText.Common.paste) {
                     if let text = UIPasteboard.general.string {
                         manager.urlText += (manager.urlText.isEmpty || manager.urlText.hasSuffix("\n") ? "" : "\n") + text
                     }
@@ -64,7 +67,7 @@ struct OtherSitesView: View {
                     .autocorrectionDisabled()
                     .disabled(busy)
                 if manager.urlText.isEmpty {
-                    Text("Instagram, Facebook, Reddit, X, Streamable,\nImgur, archive.org, direct .mp4 links...")
+                    Text(AppText.OtherSites.placeholder)
                         .font(.callout)
                         .foregroundStyle(Color.muted)
                         .padding(.top, 8)
@@ -81,37 +84,41 @@ struct OtherSitesView: View {
 
     private var optionsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Sites marked (login) need a one-time login in Settings → Accounts. Saves to Files → On My iPhone → Media Downloader")
-                .font(.footnote)
-                .foregroundStyle(Color.muted)
+            HStack(alignment: .firstTextBaseline) {
+                Text(AppText.Common.savesTo)
+                    .font(.footnote)
+                    .foregroundStyle(Color.muted)
+                InfoButton(AppText.OtherSites.loginInfo)
+                    .font(.footnote)
+            }
             HStack {
-                Text("Format:")
-                Picker("Format", selection: $format) {
+                Text(AppText.Common.formatLabel)
+                Picker(AppText.Common.format, selection: $format) {
                     ForEach(MediaFormat.allCases) { Text($0.label).tag($0) }
                 }
                 .pickerStyle(.menu)
                 .disabled(busy)
             }
             HStack {
-                Text("Quality:")
+                Text(AppText.Common.qualityLabel)
                 switch format {
                 case .video:
-                    Picker("Quality", selection: $videoQuality) {
+                    Picker(AppText.Common.quality, selection: $videoQuality) {
                         ForEach(videoQualities, id: \.height) { Text($0.label).tag($0.height) }
                     }
                     .pickerStyle(.menu)
                     .disabled(busy)
                 case .mp3:
-                    Picker("Quality", selection: $mp3Bitrate) {
-                        ForEach(mp3Bitrates, id: \.self) { Text("\($0) kbps").tag($0) }
+                    Picker(AppText.Common.quality, selection: $mp3Bitrate) {
+                        ForEach(mp3Bitrates, id: \.self) { Text(AppText.Common.kbps($0)).tag($0) }
                     }
                     .pickerStyle(.menu)
                     .disabled(busy)
                 case .audio:
-                    Text("Original (AAC)").foregroundStyle(Color.muted)
+                    Text(AppText.OtherSites.originalAAC).foregroundStyle(Color.muted)
                 }
             }
-            Toggle("Skip files that already exist", isOn: $skipExisting)
+            Toggle(AppText.Common.skipExisting, isOn: $skipExisting)
                 .disabled(busy)
         }
     }
@@ -129,7 +136,7 @@ struct OtherSitesView: View {
                     notify: notify
                 ))
             } label: {
-                Text(busy ? "Downloading..." : "Download")
+                Text(busy ? AppText.Common.downloading : AppText.Common.download)
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
@@ -139,8 +146,8 @@ struct OtherSitesView: View {
             .disabled(busy)
 
             HStack(spacing: 8) {
-                SecondaryButton("Cancel", enabled: busy) { manager.cancel() }
-                SecondaryButton("Open Folder") {
+                SecondaryButton(AppText.Common.cancel, enabled: busy) { manager.cancel() }
+                SecondaryButton(AppText.Common.openFolder) {
                     if let url = URL(string: "shareddocuments://" + DownloadManager.saveFolder.path) {
                         UIApplication.shared.open(url)
                     }
@@ -152,9 +159,15 @@ struct OtherSitesView: View {
     private var logSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                SectionLabel("Log")
+                SectionLabel(AppText.Common.log)
                 Spacer()
-                Button("Clear") { manager.clearLog() }
+                Button(AppText.Report.short) {
+                    // The last lines of the log show what went wrong
+                    report = ProblemReport(context: manager.log.suffix(30).joined(separator: "\n"))
+                }
+                .font(.footnote.bold())
+                .padding(.trailing, 8)
+                Button(AppText.Common.clear) { manager.clearLog() }
                     .font(.footnote.bold())
                     .disabled(busy || manager.log.isEmpty)
             }

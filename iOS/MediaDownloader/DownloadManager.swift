@@ -26,15 +26,11 @@ final class PlaylistPrompt: Identifiable {
     }
 }
 
-/// Settings captured when Download is pressed, so changing them mid-download can't mix things up.
-struct DownloadOptions {
-    var format: MediaFormat
-    var maxHeight: Int?
-    var mp3Bitrate: Int
-    var skipExisting: Bool
-    var embedArtwork: Bool
-    var saveVideosToPhotos: Bool
-    var notify: Bool
+/// One YouTube video waiting to download.
+struct YouTubeJob: Sendable {
+    let videoID: String
+    let title: String   // empty when not known yet (single links)
+    var link: String { "https://www.youtube.com/watch?v=\(videoID)" }
 }
 
 /// Runs downloads and holds the progress, status and log the screen shows.
@@ -42,32 +38,51 @@ struct DownloadOptions {
 @Observable
 final class DownloadManager {
     var urlText = ""
-    var status = "Idle."
+    var status = AppText.Common.idle
     var progress: Double = 0
     var playlistPrompt: PlaylistPrompt?
     private(set) var log: [String] = []
     private(set) var isRunning = false
+    /// Links shared from other apps while a download was running. They start right after.
+    private(set) var queued: [String] = []
 
     private var job: Task<Void, Never>?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var notifyEnabled = false
+    private var tracker = BatchTracker(total: 0)
 
     /// Files → On My iPhone → Media Downloader
     static var saveFolder: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
+    /// The Download button: everything in the link box.
     func start(_ options: DownloadOptions) {
         let links = urlText.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        guard !links.isEmpty else { status = "Paste at least one YouTube link."; return }
-        guard !isRunning else { return }
+        guard !links.isEmpty else { status = AppText.Status.pasteYouTubeLink; return }
+        start(links: links, options)
+    }
 
+    /// A link shared from another app (or "Download again" in History).
+    func enqueue(_ link: String) {
+        if isRunning {
+            queued.append(link)
+            add(AppText.Status.queued(link))
+        } else {
+            add(AppText.Status.linkReceived)
+            start(links: [link], DownloadOptions.saved(formatKey: "format", defaultFormat: .mp3))
+        }
+    }
+
+    private func start(links: [String], _ options: DownloadOptions) {
+        guard !isRunning else { return }
         isRunning = true
         progress = 0
         notifyEnabled = options.notify
         UIApplication.shared.isIdleTimerDisabled = true // keep the screen on while downloading
+        BackgroundKeeper.shared.begin()                 // and keep going when the phone locks
         beginBackgroundTime()
 
         job = Task {
@@ -78,8 +93,9 @@ final class DownloadManager {
 
     func cancel() {
         job?.cancel()
+        queued.removeAll()
         answerPlaylist(nil)
-        status = "Cancelling..."
+        status = AppText.Common.cancelling
     }
 
     func answerPlaylist(_ picked: [PlaylistItem]?) {
@@ -96,102 +112,155 @@ final class DownloadManager {
             _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
         }
 
-        var done = 0, skipped = 0, failed = 0
+        // 1. Work out every video first (playlists ask which videos you want)
+        var jobs: [YouTubeJob] = []
+        var failedLinks = 0
         for (i, link) in links.enumerated() {
             if Task.isCancelled { break }
-            let tag = "[\(i + 1)/\(links.count)]"
+            let tag = links.count > 1 ? AppText.Status.linkTag(i + 1, of: links.count) : AppText.Status.linkTagSingle
             add("\(tag) \(link)")
-            guard let url = URL(string: link) else { add("\(tag) Not a valid link."); failed += 1; continue }
-            status = "\(tag) Reading link..."
+            guard let url = URL(string: link) else {
+                add("\(tag) \(AppText.Status.notValidLink)")
+                HistoryStore.shared.add(source: "YouTube", title: link, link: link, status: .failed, detail: AppText.History.notValidLink)
+                failedLinks += 1
+                continue
+            }
+            status = "\(tag) \(AppText.Status.readingLink)"
 
-            // Work out which videos this link means
-            var videos: [PlaylistItem]
+            let single = YouTubeService.videoID(in: url)
             do {
-                if let playlist = try await YouTubeService.playlist(from: url), playlist.items.count > 1 {
+                let playlist = try await YouTubeService.playlist(from: url)
+                if let playlist, playlist.items.count > 1 {
                     guard let picked = await askPlaylist(playlist, url: url) else {
                         if Task.isCancelled { break }
-                        add("\(tag) Playlist skipped.")
+                        add("\(tag) \(AppText.Status.playlistSkipped)")
                         continue
                     }
-                    add("\(tag) \(picked.count) of \(playlist.items.count) videos selected from \"\(playlist.title)\"")
-                    videos = picked
-                } else if let id = YouTubeService.videoID(in: url) {
-                    videos = [PlaylistItem(id: id, title: "")]
+                    add("\(tag) \(AppText.Status.playlistPicked(picked.count, of: playlist.items.count, playlist.title))")
+                    jobs += picked.map { YouTubeJob(videoID: $0.id, title: $0.title) }
+                } else if let single {
+                    jobs.append(YouTubeJob(videoID: single, title: ""))
+                } else if let only = playlist?.items.first {
+                    jobs.append(YouTubeJob(videoID: only.id, title: only.title)) // a playlist with one video
                 } else {
-                    add("\(tag) Couldn't find a YouTube video in this link.")
-                    failed += 1
-                    continue
+                    add("\(tag) \(AppText.Status.noYouTubeVideo)")
+                    HistoryStore.shared.add(source: "YouTube", title: link, link: link, status: .failed,
+                                            detail: AppText.History.noVideoInLink)
+                    failedLinks += 1
                 }
             } catch {
                 if Task.isCancelled { break }
-                guard let id = YouTubeService.videoID(in: url) else {
-                    add("\(tag) Couldn't read link: \(error.localizedDescription)")
-                    failed += 1
+                guard let single else {
+                    add("\(tag) \(AppText.Status.playlistFailed(error.localizedDescription))")
+                    HistoryStore.shared.add(source: "YouTube", title: link, link: link, status: .failed,
+                                            detail: error.localizedDescription)
+                    failedLinks += 1
                     continue
                 }
-                add("\(tag) Couldn't read the playlist, downloading just this video.")
-                videos = [PlaylistItem(id: id, title: "")]
+                add("\(tag) \(AppText.Status.playlistFailedSingle)")
+                jobs.append(YouTubeJob(videoID: single, title: ""))
             }
+        }
 
-            for (j, video) in videos.enumerated() {
-                if Task.isCancelled { break }
-                let label = videos.count > 1 ? "\(tag) \(j + 1)/\(videos.count)" : tag
-
-                // Skip before downloading anything when we already know the title
-                if o.skipExisting, !video.title.isEmpty {
-                    let name = YouTubeService.fileName(video.title, ext: o.format.fileExtension)
-                    if FileManager.default.fileExists(atPath: Self.saveFolder.appendingPathComponent(name).path) {
-                        add("\(label) Skipped (already exists): \(name)")
-                        skipped += 1
-                        continue
-                    }
-                }
-
-                progress = 0
-                do {
-                    let result = try await YouTubeService.download(
-                        videoID: video.id, format: o.format, maxHeight: o.maxHeight, mp3Bitrate: o.mp3Bitrate,
-                        skipExisting: o.skipExisting, embedArtwork: o.embedArtwork,
-                        into: Self.saveFolder
-                    ) { p, text in
-                        self.progress = p
-                        self.status = "\(label) \(text)"
-                    }
-                    switch result {
-                    case .alreadyExists(let name):
-                        add("\(label) Skipped (already exists): \(name)")
-                        skipped += 1
-                    case .saved(let file):
-                        add("\(label) Done: \(file.lastPathComponent)")
-                        done += 1
-                        if o.format == .video && o.saveVideosToPhotos {
-                            do {
-                                try await YouTubeService.saveToPhotos(file)
-                                add("\(label) Added to Photos")
-                            } catch {
-                                add("\(label) Couldn't add to Photos: \(error.localizedDescription)")
-                            }
-                        }
-                    }
-                } catch {
-                    if Task.isCancelled { add("\(label) Cancelled"); break }
-                    add("\(label) Failed: \(error.localizedDescription)")
-                    failed += 1
-                }
+        // 2. Download them, several at once if set in Settings
+        tracker = BatchTracker(total: jobs.count)
+        tracker.failed = failedLinks
+        if !jobs.isEmpty && !Task.isCancelled {
+            if o.atOnce > 1 && jobs.count > 1 { add(AppText.Status.atOnce(min(o.atOnce, jobs.count))) }
+            let total = jobs.count, batch = jobs
+            refreshProgress(total: total)
+            await runLimited(batch, limit: o.atOnce) { index, job in
+                await self.download(job, number: index, of: total, o)
             }
         }
 
         progress = 0
-        status = Task.isCancelled
-            ? "Cancelled. \(done) downloaded."
-            : "Finished: \(done) downloaded, \(skipped) skipped, \(failed) failed."
+        status = Task.isCancelled ? AppText.Status.cancelledCount(tracker.done) : AppText.Status.finished(tracker.summary)
+        LiveActivityController.shared.finish(source: "YouTube", summary: status,
+                                             finished: tracker.finished, total: tracker.total)
         if o.notify && UIApplication.shared.applicationState != .active {
-            notify("Downloads finished", status)
+            notify(AppText.Status.downloadsFinished, status)
         }
     }
 
+    /// One video: skip check, download, save, history.
+    private func download(_ job: YouTubeJob, number index: Int, of total: Int, _ o: DownloadOptions) async {
+        let label = total > 1 ? "[\(index + 1)/\(total)]" : "[1/1]"
+        defer {
+            tracker.active[index] = nil
+            tracker.finished += 1
+            refreshProgress(total: total)
+        }
+        if Task.isCancelled {
+            HistoryStore.shared.add(source: "YouTube", title: job.title, link: job.link, status: .cancelled)
+            return
+        }
+
+        // Skip before downloading anything when we already know the title
+        if o.skipExisting, !job.title.isEmpty {
+            let name = YouTubeService.fileName(job.title, ext: o.format.fileExtension)
+            if FileManager.default.fileExists(atPath: Self.saveFolder.appendingPathComponent(name).path) {
+                add("\(label) \(AppText.Status.skippedExists(name))")
+                tracker.skipped += 1
+                HistoryStore.shared.add(source: "YouTube", title: job.title, link: job.link, status: .skipped,
+                                        detail: AppText.History.alreadyInFolder, fileName: name)
+                return
+            }
+        }
+
+        tracker.active[index] = (0, AppText.Status.starting)
+        refreshProgress(total: total)
+        do {
+            let result = try await YouTubeService.download(
+                videoID: job.videoID, format: o.format, maxHeight: o.maxHeight, mp3Bitrate: o.mp3Bitrate,
+                skipExisting: o.skipExisting, embedArtwork: o.embedArtwork,
+                into: Self.saveFolder
+            ) { p, text in
+                self.tracker.active[index] = (p, text)
+                self.refreshProgress(total: total)
+            }
+            switch result {
+            case .alreadyExists(let name):
+                add("\(label) \(AppText.Status.skippedExists(name))")
+                tracker.skipped += 1
+                HistoryStore.shared.add(source: "YouTube", title: (name as NSString).deletingPathExtension,
+                                        link: job.link, status: .skipped, detail: AppText.History.alreadyInFolder, fileName: name)
+            case .saved(let file):
+                add("\(label) \(AppText.Status.done(file.lastPathComponent))")
+                tracker.done += 1
+                HistoryStore.shared.add(source: "YouTube", title: file.deletingPathExtension().lastPathComponent,
+                                        link: job.link, status: .done, fileName: file.lastPathComponent)
+                if o.format == .video && o.saveVideosToPhotos {
+                    do {
+                        try await YouTubeService.saveToPhotos(file)
+                        add("\(label) \(AppText.Status.addedToPhotos)")
+                    } catch {
+                        add("\(label) \(AppText.Status.photosFailed(error.localizedDescription))")
+                    }
+                }
+            }
+        } catch {
+            if Task.isCancelled {
+                add("\(label) \(AppText.Status.cancelled)")
+                HistoryStore.shared.add(source: "YouTube", title: job.title, link: job.link, status: .cancelled)
+            } else {
+                add("\(label) \(AppText.Status.failed(error.localizedDescription))")
+                tracker.failed += 1
+                HistoryStore.shared.add(source: "YouTube", title: job.title, link: job.link, status: .failed,
+                                        detail: error.localizedDescription)
+            }
+        }
+    }
+
+    private func refreshProgress(total: Int) {
+        progress = tracker.overall
+        status = tracker.status { "[\($0 + 1)/\(total)]" }
+        LiveActivityController.shared.update(source: "YouTube", status: status, progress: progress,
+                                             finished: tracker.finished, total: total)
+    }
+
     private func askPlaylist(_ playlist: PlaylistInfo, url: URL) async -> [PlaylistItem]? {
-        status = "Waiting for playlist selection..."
+        status = AppText.Status.waitingForPlaylist
         // watch?v=X&list=... usually means "this one song", so pre-tick just it
         let preselected: Set<String>
         if let id = YouTubeService.videoID(in: url), playlist.items.contains(where: { $0.id == id }) {
@@ -221,8 +290,8 @@ final class DownloadManager {
     }
 
     private func backgroundTimeExpired() {
-        if isRunning && notifyEnabled {
-            notify("Download paused", "Open Media Downloader to continue downloading.")
+        if isRunning && notifyEnabled && !BackgroundKeeper.shared.isKeepingAlive {
+            notify(AppText.Status.downloadPaused, AppText.Status.openToContinue)
         }
         endBackgroundTime()
     }
@@ -239,6 +308,14 @@ final class DownloadManager {
         job = nil
         UIApplication.shared.isIdleTimerDisabled = false
         endBackgroundTime()
+        BackgroundKeeper.shared.end()
+
+        // Links shared while this batch ran
+        if !queued.isEmpty {
+            let next = queued
+            queued.removeAll()
+            start(links: next, DownloadOptions.saved(formatKey: "format", defaultFormat: .mp3))
+        }
     }
 
     private func notify(_ title: String, _ body: String) {

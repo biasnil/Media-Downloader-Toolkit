@@ -21,22 +21,22 @@ struct PlaylistSheet: View {
             List {
                 Section {
                     HStack {
-                        Text("#")
+                        Text(verbatim: "#")
                         TextField("1", text: $from).numberField()
-                        Text("to #")
+                        Text(AppText.Playlist.toNumber)
                         TextField("\(prompt.items.count)", text: $to).numberField()
                         Spacer()
-                        Button("Apply", action: applyRange)
+                        Button(AppText.Playlist.apply, action: applyRange)
                             .buttonStyle(.borderedProminent)
                     }
                     HStack {
-                        Button("Select all") { selected = Set(prompt.items.map(\.id)) }
+                        Button(AppText.Common.selectAll) { selected = Set(prompt.items.map(\.id)) }
                         Spacer()
-                        Button("Select none") { selected.removeAll() }
+                        Button(AppText.Common.selectNone) { selected.removeAll() }
                     }
                     .buttonStyle(.borderless)
                 } footer: {
-                    Text("\(prompt.items.count) videos. Tick the ones you want.")
+                    Text(AppText.Playlist.count(prompt.items.count))
                 }
 
                 Section {
@@ -46,7 +46,7 @@ struct PlaylistSheet: View {
                                 Image(systemName: selected.contains(item.id) ? "checkmark.circle.fill" : "circle")
                                     .foregroundStyle(selected.contains(item.id) ? Color.ytRed : Color.muted)
                                     .font(.title3)
-                                Text("\(index + 1). \(item.title)")
+                                Text(verbatim: "\(index + 1). \(item.title)")
                                     .lineLimit(2)
                                     .foregroundStyle(Color.primary)
                             }
@@ -58,10 +58,10 @@ struct PlaylistSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Skip") { onDone(nil) }
+                    Button(AppText.Common.skip) { onDone(nil) }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Download (\(selected.count))") {
+                    Button(AppText.Common.downloadCount(selected.count)) {
                         onDone(prompt.items.filter { selected.contains($0.id) })
                     }
                     .disabled(selected.isEmpty)

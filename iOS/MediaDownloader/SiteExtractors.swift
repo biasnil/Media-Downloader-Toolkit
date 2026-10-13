@@ -3,6 +3,7 @@ import Foundation
 /// What an extractor found behind a link: where the video (and maybe separate audio) lives.
 struct SiteMedia: Sendable {
     let title: String
+    /// The file itself: a video, or the picture/audio file when isImage/isAudioOnly is set.
     let videoURL: URL
     /// Reddit keeps sound in a separate file; X puts it inside the video (nil here).
     let audioURL: URL?
@@ -10,6 +11,10 @@ struct SiteMedia: Sendable {
     let silent: Bool
     /// The link is an audio file (e.g. a direct .mp3) — saved as-is.
     var isAudioOnly: Bool = false
+    /// A picture (Instagram/Facebook photos) — saved as-is.
+    var isImage: Bool = false
+    /// Small preview for the "pick what to download" screen.
+    var thumbnailURL: URL? = nil
 }
 
 /// One site = one extractor, so if a site changes, only its file needs fixing.
@@ -29,17 +34,7 @@ enum Sites {
     ]
 
     /// What the "Supported sites" dropdown shows.
-    static let supportedList: [String] = [
-        "Instagram (login)",
-        "Facebook (login)",
-        "Reddit (login optional)",
-        "X / Twitter",
-        "Streamable",
-        "Imgur",
-        "Internet Archive",
-        "Direct .mp4 / .mov / .mp3 / .m4a links",
-        "Tumblr & other pages with a video tag",
-    ]
+    static var supportedList: [String] { AppText.OtherSites.supportedList }
 
     static func extractor(for url: URL) -> (any SiteExtractor.Type)? {
         all.first { $0.canHandle(url) }
@@ -54,7 +49,12 @@ enum Sites {
         var request = URLRequest(url: url)
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-        request.setValue("text/html,application/xhtml+xml,*/*", forHTTPHeaderField: "Accept")
+        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        // What a browser sends when you open a page. Facebook answers HTTP 400 without these.
+        request.setValue("navigate", forHTTPHeaderField: "Sec-Fetch-Mode")
+        request.setValue("none", forHTTPHeaderField: "Sec-Fetch-Site")
+        request.setValue("document", forHTTPHeaderField: "Sec-Fetch-Dest")
+        request.setValue("?1", forHTTPHeaderField: "Sec-Fetch-User")
         if let cookie { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -149,7 +149,7 @@ enum RedditExtractor: SiteExtractor {
         var path = postURL.path
         while path.hasSuffix("/") { path.removeLast() }
         guard path.contains("/comments/") else {
-            throw DownloadError.noStream("That's not a link to a Reddit post")
+            throw DownloadError.noStream(AppText.Errors.redditBadLink)
         }
 
         var request = URLRequest(url: URL(string: "https://www.reddit.com\(path).json?raw_json=1")!)
@@ -161,19 +161,22 @@ enum RedditExtractor: SiteExtractor {
         do {
             json = try await Sites.getJSON(request)
         } catch DownloadError.http(let code) where code == 403 || code == 429 {
-            throw DownloadError.noStream("Reddit blocked the request (HTTP \(code)). Logging in to Reddit in Settings → Accounts usually fixes this.")
+            throw DownloadError.noStream(AppText.Errors.redditBlocked(code))
         }
 
         guard let listing = (json as? [Any])?.first as? [String: Any],
               let post = ((listing["data"] as? [String: Any])?["children"] as? [[String: Any]])?
                 .first?["data"] as? [String: Any] else {
-            throw DownloadError.noStream("Couldn't read the Reddit post")
+            throw DownloadError.noStream(AppText.Errors.redditUnreadable)
         }
         let title = (post["title"] as? String) ?? "Reddit video"
 
         guard let video = redditVideo(in: post),
               let fallback = (video["fallback_url"] as? String).flatMap(URL.init(string:)) else {
-            throw DownloadError.noStream("This post has no Reddit-hosted video (images and YouTube links aren't supported here)")
+            // No video: a picture or a gallery
+            let pictures = redditImages(in: post, title: title)
+            guard !pictures.isEmpty else { throw DownloadError.noStream(AppText.Errors.redditNoMedia) }
+            return pictures
         }
         let isGIF = (video["is_gif"] as? Bool) ?? false
         let hasAudio = !isGIF && ((video["has_audio"] as? Bool) ?? true)
@@ -217,6 +220,61 @@ enum RedditExtractor: SiteExtractor {
         if let v = fromMedia(post) { return v }
         if let original = (post["crosspost_parent_list"] as? [[String: Any]])?.first, let v = fromMedia(original) { return v }
         return (post["preview"] as? [String: Any])?["reddit_video_preview"] as? [String: Any]
+    }
+
+    /// Pictures in a post: a gallery (several), or a single i.redd.it image. Crossposts use the original.
+    private static func redditImages(in post: [String: Any], title: String) -> [SiteMedia] {
+        let source = (post["crosspost_parent_list"] as? [[String: Any]])?.first ?? post
+        var found: [SiteMedia] = []
+
+        // Gallery: the order is in gallery_data, the files in media_metadata
+        if let items = (source["gallery_data"] as? [String: Any])?["items"] as? [[String: Any]],
+           let metadata = source["media_metadata"] as? [String: Any] {
+            for item in items {
+                guard let id = item["media_id"] as? String,
+                      let meta = metadata[id] as? [String: Any], (meta["status"] as? String) != "failed",
+                      let full = meta["s"] as? [String: Any] else { continue }
+                let thumbnail = smallPreview(meta["p"] as? [[String: Any]] ?? [], key: "u")
+                if (meta["e"] as? String) == "AnimatedImage" {
+                    // GIFs: Reddit also has them as silent MP4s, which are much smaller
+                    if let mp4 = (full["mp4"] as? String).flatMap(URL.init(string:)) {
+                        found.append(SiteMedia(title: title, videoURL: mp4, audioURL: nil, silent: true, thumbnailURL: thumbnail))
+                    } else if let gif = (full["gif"] as? String).flatMap(URL.init(string:)) {
+                        found.append(SiteMedia(title: title, videoURL: gif, audioURL: nil, silent: true,
+                                               isImage: true, thumbnailURL: thumbnail))
+                    }
+                    continue
+                }
+                // The original file lives at i.redd.it/<id>.<ext>; the "s" link is a resized preview
+                let ext = ((meta["m"] as? String) ?? "image/jpg").components(separatedBy: "/").last ?? "jpg"
+                let original = URL(string: "https://i.redd.it/\(id).\(ext == "jpeg" ? "jpg" : ext)")
+                guard let link = original ?? (full["u"] as? String).flatMap(URL.init(string:)) else { continue }
+                found.append(SiteMedia(title: title, videoURL: link, audioURL: nil, silent: true,
+                                       isImage: true, thumbnailURL: thumbnail))
+            }
+        }
+
+        // Single picture
+        if found.isEmpty,
+           let link = ((source["url_overridden_by_dest"] ?? source["url"]) as? String).flatMap(URL.init(string:)),
+           ["jpg", "jpeg", "png", "gif", "webp"].contains(link.pathExtension.lowercased()) {
+            let previews = ((source["preview"] as? [String: Any])?["images"] as? [[String: Any]])?.first
+            let thumbnail = smallPreview(previews?["resolutions"] as? [[String: Any]] ?? [], key: "url")
+            found.append(SiteMedia(title: title, videoURL: link, audioURL: nil, silent: true,
+                                   isImage: true, thumbnailURL: thumbnail ?? link))
+        }
+
+        guard found.count > 1 else { return found }
+        return found.enumerated().map { index, media in
+            SiteMedia(title: "\(title) (\(index + 1))", videoURL: media.videoURL, audioURL: nil, silent: media.silent,
+                      isImage: media.isImage, thumbnailURL: media.thumbnailURL)
+        }
+    }
+
+    /// The preview closest to 320 px wide, for the picker grid.
+    private static func smallPreview(_ previews: [[String: Any]], key: String) -> URL? {
+        let pick = previews.first { ($0["x"] as? Int ?? $0["width"] as? Int ?? 0) >= 320 } ?? previews.last
+        return (pick?[key] as? String).flatMap(URL.init(string:))
     }
 
     struct Track { let url: URL; let height: Int; let bandwidth: Int }
@@ -292,7 +350,7 @@ enum XExtractor: SiteExtractor {
         let parts = url.pathComponents
         guard let i = parts.firstIndex(of: "status"), i + 1 < parts.count,
               let id = Int64(parts[i + 1].prefix { $0.isNumber }) else {
-            throw DownloadError.noStream("That's not a link to an X post")
+            throw DownloadError.noStream(AppText.Errors.xBadLink)
         }
         let limit = maxHeight ?? Int.max
 
@@ -301,7 +359,7 @@ enum XExtractor: SiteExtractor {
         }
         let found = try await fromFxTwitter(id: id, limit: limit)
         if found.isEmpty {
-            throw DownloadError.noStream("This post has no video (or it's private / age-restricted)")
+            throw DownloadError.noStream(AppText.Errors.xNoVideo)
         }
         return found
     }

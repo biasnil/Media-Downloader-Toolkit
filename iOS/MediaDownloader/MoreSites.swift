@@ -22,11 +22,15 @@ enum FacebookExtractor: SiteExtractor {
             c.host = "www.facebook.com"
             pageURL = c.url ?? url
         }
-        let page = try await Sites.getPage(pageURL, userAgent: SiteLogin.desktopUA, cookie: cookie)
+        var page = try await Sites.getPage(pageURL, userAgent: SiteLogin.desktopUA, cookie: cookie)
+        // Share links (/share/v/..., /share/r/...) answer with a tiny "Redirecting..." page that
+        // forwards with JavaScript, sometimes twice. Follow it to the real post.
+        for _ in 0..<4 {
+            guard page.html.count < 20_000, let next = redirectTarget(in: page.html) else { break }
+            page = try await Sites.getPage(next, userAgent: SiteLogin.desktopUA, cookie: cookie)
+        }
         if page.finalURL.path.contains("/login") || page.finalURL.path.contains("/checkpoint") {
-            throw DownloadError.noStream(cookie == nil
-                ? "Facebook wants you logged in for this video: Settings (gear) → Accounts → Facebook"
-                : "Facebook logged you out. Log in again: Settings → Accounts → Facebook")
+            throw DownloadError.noStream(cookie == nil ? AppText.Errors.facebookLogin : AppText.Errors.facebookLoggedOut)
         }
         let html = page.html
 
@@ -40,25 +44,89 @@ enum FacebookExtractor: SiteExtractor {
             cursor = found.end
         }
 
-        let hd = [Sites.jsonString(after: "browser_native_hd_url", in: html)?.value,
+        // Reel pages also hold the next reels' videos; prefer the one for this link
+        let wanted = videoID(in: page.finalURL)
+        let hd = [videoLink("browser_native_hd_url", in: html, videoID: wanted),
                   Sites.jsonString(after: "playable_url_quality_hd", in: html)?.value,
                   progressiveHD].compactMap { $0 }.first { !$0.contains(".mpd") }
-        let sd = [Sites.jsonString(after: "browser_native_sd_url", in: html)?.value,
+        let sd = [videoLink("browser_native_sd_url", in: html, videoID: wanted),
                   Sites.jsonString(after: "playable_url", in: html)?.value,
                   progressiveSD].compactMap { $0 }.first { !$0.contains(".mpd") }
 
+        let meta = Sites.metaTags(in: html)
+        var title = meta["og:title"] ?? "Facebook"
+        if title.count > 80 { title = String(title.prefix(80)) }
+
         // HD is usually 720p+, SD around 360p
         let wantSD = (maxHeight ?? Int.max) < 720
-        guard let link = (wantSD ? (sd ?? hd) : (hd ?? sd)), let videoURL = URL(string: link) else {
-            throw DownloadError.noStream(cookie == nil
-                ? "No public video found. If it's not public, log in: Settings → Accounts → Facebook"
-                : "Couldn't find a video on this Facebook page")
+        if let link = (wantSD ? (sd ?? hd) : (hd ?? sd)), let videoURL = URL(string: link) {
+            return [SiteMedia(title: title, videoURL: videoURL, audioURL: nil, silent: false,
+                              thumbnailURL: meta["og:image"].flatMap(URL.init(string:)))]
         }
 
-        let meta = Sites.metaTags(in: html)
-        var title = meta["og:title"] ?? "Facebook video"
-        if title.count > 80 { title = String(title.prefix(80)) }
-        return [SiteMedia(title: title, videoURL: videoURL, audioURL: nil, silent: false)]
+        // No video: a photo post (one picture or several)
+        let photos = photoLinks(in: html, url: page.finalURL, meta: meta)
+        guard !photos.isEmpty else {
+            throw DownloadError.noStream(cookie == nil ? AppText.Errors.facebookNothingPublic : AppText.Errors.facebookNothing)
+        }
+        return photos.enumerated().map { index, photo in
+            SiteMedia(title: photos.count > 1 ? "\(title) (\(index + 1))" : title, videoURL: photo, audioURL: nil,
+                      silent: true, isImage: true, thumbnailURL: photo)
+        }
+    }
+
+    /// The address in a "Redirecting..." page's <meta http-equiv="refresh" content="0;url=...">.
+    private static func redirectTarget(in html: String) -> URL? {
+        guard let tag = html.range(of: "http-equiv=\"refresh\"", options: .caseInsensitive),
+              let start = html.range(of: "url=", options: .caseInsensitive, range: tag.upperBound..<html.endIndex),
+              let end = html[start.upperBound...].firstIndex(of: "\"") else { return nil }
+        return URL(string: Sites.decodeEntities(String(html[start.upperBound..<end])))
+    }
+
+    /// The video number in /videos/123..., /reel/123... or ?v=123 links.
+    private static func videoID(in url: URL) -> String? {
+        let parts = url.pathComponents
+        if let i = parts.firstIndex(where: { $0 == "videos" || $0 == "reel" }), i + 1 < parts.count {
+            if let id = parts[(i + 1)...].first(where: { !$0.isEmpty && $0.allSatisfy(\.isNumber) }) { return id }
+        }
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "v" }?.value
+    }
+
+    /// The [key] link that belongs to video [videoID] (its "id" follows soon after), else the first one.
+    private static func videoLink(_ key: String, in html: String, videoID: String?) -> String? {
+        let first = Sites.jsonString(after: key, in: html)
+        guard let videoID, var found = first else { return first?.value }
+        let marker = "\"id\":\"\(videoID)\""
+        while true {
+            let end = html.index(found.end, offsetBy: 3000, limitedBy: html.endIndex) ?? html.endIndex
+            if html[found.end..<end].contains(marker) { return found.value }
+            guard let next = Sites.jsonString(after: key, in: html, from: found.end) else { return first?.value }
+            found = next
+        }
+    }
+
+    /// Full-size photos in the page data ("viewer_image" on photo pages, "photo_image" in posts),
+    /// or the preview picture when the link itself is a photo. Duplicates removed.
+    private static func photoLinks(in html: String, url: URL, meta: [String: String]) -> [URL] {
+        var found: [URL] = []
+        var seen = Set<String>()
+        for key in ["\"viewer_image\":{", "\"photo_image\":{"] {
+            var cursor = html.startIndex
+            while let start = html.range(of: key, range: cursor..<html.endIndex) {
+                let end = html.index(start.upperBound, offsetBy: 400, limitedBy: html.endIndex) ?? html.endIndex
+                let window = String(html[start.upperBound..<end])
+                if let uri = Sites.jsonString(after: "uri", in: window)?.value, let link = URL(string: uri),
+                   seen.insert(link.path).inserted {
+                    found.append(link)
+                }
+                cursor = start.upperBound
+            }
+        }
+        let isPhotoLink = url.path.contains("photo") || url.query?.contains("fbid=") == true
+        if found.isEmpty, isPhotoLink, let preview = meta["og:image"].flatMap(URL.init(string:)) {
+            found.append(preview)
+        }
+        return Array(found.prefix(50))
     }
 }
 
@@ -74,13 +142,13 @@ enum StreamableExtractor: SiteExtractor {
         // streamable.com/abc, /e/abc, /s/abc/...
         var parts = url.pathComponents.filter { $0 != "/" }
         if let first = parts.first, first == "e" || first == "s" { parts.removeFirst() }
-        guard let id = parts.first else { throw DownloadError.noStream("That's not a Streamable video link") }
+        guard let id = parts.first else { throw DownloadError.noStream(AppText.Errors.streamableBadLink) }
 
         guard let video = try await Sites.getJSON(URLRequest(url: URL(string: "https://ajax.streamable.com/videos/\(id)")!)) as? [String: Any] else {
-            throw DownloadError.noStream("Couldn't read the Streamable video")
+            throw DownloadError.noStream(AppText.Errors.streamableUnreadable)
         }
         guard (video["status"] as? Int) == 2 else {
-            throw DownloadError.noStream("This Streamable video is still processing or unavailable")
+            throw DownloadError.noStream(AppText.Errors.streamableProcessing)
         }
         let title = (video["reddit_title"] as? String) ?? (video["title"] as? String) ?? "Streamable \(id)"
 
@@ -93,7 +161,7 @@ enum StreamableExtractor: SiteExtractor {
         let limit = maxHeight ?? Int.max
         let fitting = files.filter { $0.1 <= limit }
         let best = fitting.isEmpty ? files.min(by: { $0.1 < $1.1 }) : fitting.max(by: { $0.1 < $1.1 })
-        guard let pick = best?.0 else { throw DownloadError.noStream("No MP4 file for this Streamable video") }
+        guard let pick = best?.0 else { throw DownloadError.noStream(AppText.Errors.streamableNoMP4) }
         return [SiteMedia(title: title, videoURL: pick, audioURL: nil, silent: false)]
     }
 }
@@ -112,7 +180,7 @@ enum ImgurExtractor: SiteExtractor {
         if let first = parts.first, ["a", "gallery", "t", "r"].contains(first) {
             return try await GenericPageExtractor.extract(url, maxHeight: maxHeight)
         }
-        guard let last = parts.last else { throw DownloadError.noStream("That's not an Imgur link") }
+        guard let last = parts.last else { throw DownloadError.noStream(AppText.Errors.imgurBadLink) }
         let id = (last as NSString).deletingPathExtension
         let video = URL(string: "https://i.imgur.com/\(id).mp4")!
         return [SiteMedia(title: "Imgur \(id)", videoURL: video, audioURL: nil, silent: false)]
@@ -131,14 +199,14 @@ enum ArchiveOrgExtractor: SiteExtractor {
         // archive.org/details/ITEM  or  archive.org/details/ITEM/file.mp4  (also /download/)
         let parts = url.pathComponents.filter { $0 != "/" }
         guard parts.count >= 2, ["details", "download", "embed"].contains(parts[0]) else {
-            throw DownloadError.noStream("That's not an Internet Archive item link")
+            throw DownloadError.noStream(AppText.Errors.archiveBadLink)
         }
         let item = parts[1]
         let wantedFile = parts.count > 2 ? parts[2...].joined(separator: "/").removingPercentEncoding : nil
 
         guard let json = try await Sites.getJSON(URLRequest(url: URL(string: "https://archive.org/metadata/\(item)")!)) as? [String: Any],
               let files = json["files"] as? [[String: Any]] else {
-            throw DownloadError.noStream("Couldn't read this Internet Archive item")
+            throw DownloadError.noStream(AppText.Errors.archiveUnreadable)
         }
         let itemTitle = ((json["metadata"] as? [String: Any])?["title"] as? String) ?? item
         let names = files.compactMap { $0["name"] as? String }
@@ -168,7 +236,7 @@ enum ArchiveOrgExtractor: SiteExtractor {
         if !audios.isEmpty {
             return audios.prefix(100).compactMap { media($0, audio: true, multiple: audios.count > 1) }
         }
-        throw DownloadError.noStream("This item has no MP4 video or MP3 audio")
+        throw DownloadError.noStream(AppText.Errors.archiveNoMedia)
     }
 }
 
@@ -242,7 +310,7 @@ enum GenericPageExtractor: SiteExtractor {
             }
         }
 
-        throw DownloadError.noStream("No downloadable video found on this page (this site isn't supported)")
+        throw DownloadError.noStream(AppText.Errors.pageNoVideo)
     }
 
     private static func pageTitle(_ html: String) -> String? {

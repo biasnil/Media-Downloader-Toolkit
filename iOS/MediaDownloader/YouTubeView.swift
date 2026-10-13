@@ -3,9 +3,9 @@ import UIKit
 
 let mp3Bitrates = [320, 256, 192, 128]
 
-let videoQualities: [(label: String, height: Int)] = [
-    ("Best available", 0), ("1080p", 1080), ("720p", 720), ("480p", 480), ("360p", 360),
-]
+var videoQualities: [(label: String, height: Int)] {
+    [(AppText.Common.bestAvailable, 0), ("1080p", 1080), ("720p", 720), ("480p", 480), ("360p", 360)]
+}
 
 struct YouTubeView: View {
     @Bindable var manager: DownloadManager
@@ -18,6 +18,8 @@ struct YouTubeView: View {
     @AppStorage("embedArtwork") private var embedArtwork = true
     @AppStorage("saveVideosToPhotos") private var saveVideosToPhotos = false
     @AppStorage("notify") private var notify = true
+
+    @State private var report: ProblemReport?
 
     private var busy: Bool { manager.isRunning }
 
@@ -33,6 +35,7 @@ struct YouTubeView: View {
             .padding(16)
         }
         .scrollDismissesKeyboard(.interactively)
+        .reportProblem($report)
         .background(Color.appBackground)
     }
 
@@ -41,9 +44,9 @@ struct YouTubeView: View {
     private var urlSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                SectionLabel("YouTube URL(s), one per line")
+                SectionLabel(AppText.YouTube.linksLabel)
                 Spacer()
-                Button("Paste") {
+                Button(AppText.Common.paste) {
                     if let text = UIPasteboard.general.string {
                         manager.urlText += (manager.urlText.isEmpty || manager.urlText.hasSuffix("\n") ? "" : "\n") + text
                     }
@@ -59,7 +62,7 @@ struct YouTubeView: View {
                     .autocorrectionDisabled()
                     .disabled(busy)
                 if manager.urlText.isEmpty {
-                    Text("https://youtu.be/...")
+                    Text(verbatim: "https://youtu.be/...")
                         .font(.callout)
                         .foregroundStyle(Color.muted)
                         .padding(.top, 8)
@@ -76,38 +79,38 @@ struct YouTubeView: View {
 
     private var optionsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Saves to Files → On My iPhone → Media Downloader")
+            Text(AppText.Common.savesTo)
                 .font(.footnote)
                 .foregroundStyle(Color.muted)
 
             HStack {
-                Text("Format:")
-                Picker("Format", selection: $format) {
+                Text(AppText.Common.formatLabel)
+                Picker(AppText.Common.format, selection: $format) {
                     ForEach(MediaFormat.allCases) { Text($0.label).tag($0) }
                 }
                 .pickerStyle(.menu)
                 .disabled(busy)
             }
             HStack {
-                Text("Quality:")
+                Text(AppText.Common.qualityLabel)
                 if format == .video {
-                    Picker("Quality", selection: $videoQuality) {
+                    Picker(AppText.Common.quality, selection: $videoQuality) {
                         ForEach(videoQualities, id: \.height) { Text($0.label).tag($0.height) }
                     }
                     .pickerStyle(.menu)
                     .disabled(busy)
                 } else if format == .mp3 {
-                    Picker("Quality", selection: $mp3Bitrate) {
-                        ForEach(mp3Bitrates, id: \.self) { Text("\($0) kbps").tag($0) }
+                    Picker(AppText.Common.quality, selection: $mp3Bitrate) {
+                        ForEach(mp3Bitrates, id: \.self) { Text(AppText.Common.kbps($0)).tag($0) }
                     }
                     .pickerStyle(.menu)
                     .disabled(busy)
                 } else {
-                    Text("Best available (AAC)")
+                    Text(AppText.YouTube.bestAAC)
                         .foregroundStyle(Color.muted)
                 }
             }
-            Toggle("Skip files that already exist", isOn: $skipExisting)
+            Toggle(AppText.Common.skipExisting, isOn: $skipExisting)
                 .disabled(busy)
         }
     }
@@ -125,7 +128,7 @@ struct YouTubeView: View {
                     notify: notify
                 ))
             } label: {
-                Text(busy ? "Downloading..." : "Download")
+                Text(busy ? AppText.Common.downloading : AppText.Common.download)
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
@@ -135,8 +138,8 @@ struct YouTubeView: View {
             .disabled(busy)
 
             HStack(spacing: 8) {
-                SecondaryButton("Cancel", enabled: busy) { manager.cancel() }
-                SecondaryButton("Open Folder") { openFolder() }
+                SecondaryButton(AppText.Common.cancel, enabled: busy) { manager.cancel() }
+                SecondaryButton(AppText.Common.openFolder) { openFolder() }
             }
         }
     }
@@ -154,9 +157,15 @@ struct YouTubeView: View {
     private var logSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                SectionLabel("Log")
+                SectionLabel(AppText.Common.log)
                 Spacer()
-                Button("Clear") { manager.clearLog() }
+                Button(AppText.Report.short) {
+                    // The last lines of the log show what went wrong
+                    report = ProblemReport(context: manager.log.suffix(30).joined(separator: "\n"))
+                }
+                .font(.footnote.bold())
+                .padding(.trailing, 8)
+                Button(AppText.Common.clear) { manager.clearLog() }
                     .font(.footnote.bold())
                     .disabled(busy || manager.log.isEmpty)
             }
@@ -196,6 +205,48 @@ struct SectionLabel: View {
     init(_ text: String) { self.text = text }
     var body: some View {
         Text(text).font(.subheadline.bold())
+    }
+}
+
+/// ⓘ button: tap to read a longer explanation in a small bubble.
+struct InfoButton: View {
+    let text: String
+    @State private var shown = false
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Button { shown = true } label: {
+            Image(systemName: "info.circle")
+        }
+        .buttonStyle(.borderless)
+        .popover(isPresented: $shown) {
+            Text(text)
+                .font(.footnote)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 280, alignment: .leading)
+                .padding()
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+}
+
+/// Settings section title with an ⓘ at the end.
+struct InfoHeader: View {
+    let title: String
+    let info: String
+    init(_ title: String, info: String) {
+        self.title = title
+        self.info = info
+    }
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            InfoButton(info)
+                .textCase(nil)
+                .font(.body)
+        }
     }
 }
 

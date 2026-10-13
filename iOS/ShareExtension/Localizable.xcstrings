@@ -1,0 +1,90 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "Couldn't open the app automatically.\nThe link is copied — open Media Downloader and tap Paste." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't open the app automatically.\nThe link is copied — open Media Downloader and tap Paste."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible d'ouvrir l'app automatiquement.\nLe lien est copié : ouvrez Media Downloader et touchez Coller."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法自动打开 App。\n链接已复制，请打开 Media Downloader 并轻点“粘贴”。"
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tidak dapat membuka app secara automatik.\nPautan telah disalin — buka Media Downloader dan ketik Tampal."
+          }
+        }
+      }
+    },
+    "No link found in what you shared." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No link found in what you shared."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucun lien trouvé dans ce que vous avez partagé."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你分享的内容中没有链接。"
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tiada pautan ditemui dalam apa yang anda kongsi."
+          }
+        }
+      }
+    },
+    "Opening Media Downloader..." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opening Media Downloader..."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouverture de Media Downloader…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在打开 Media Downloader…"
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Membuka Media Downloader..."
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

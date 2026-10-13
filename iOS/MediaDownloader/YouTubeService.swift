@@ -21,9 +21,9 @@ enum MediaFormat: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .mp3: return "Audio (mp3)"
-        case .audio: return "Audio (m4a)"
-        case .video: return "Video (mp4)"
+        case .mp3: return AppText.Formats.mp3
+        case .audio: return AppText.Formats.m4a
+        case .video: return AppText.Formats.mp4
         }
     }
     var fileExtension: String {
@@ -48,10 +48,10 @@ enum DownloadError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .http(let code): return "Server returned HTTP \(code)"
+        case .http(let code): return AppText.Errors.http(code)
         case .noStream(let what): return what
-        case .export(let why): return "Couldn't save the file: \(why)"
-        case .photosDenied: return "No permission to add videos to Photos"
+        case .export(let why): return AppText.Errors.saveFailed(why)
+        case .photosDenied: return AppText.Errors.photosDenied
         }
     }
 
@@ -88,21 +88,106 @@ enum YouTubeService {
     }
 
     // MARK: - Playlists
-    // YouTubeKit only handles single videos, so playlists are read from the page's
-    // ytInitialData JSON — the same data YouTube's own website renders from.
+    // YouTubeKit only handles single videos. Playlists are read the way yt-dlp does it:
+    // first YouTube's own internal API (the "browse"/"next" calls its website makes),
+    // then the web page as a backup.
 
-    /// Returns nil when the link has no playlist. Reads the first page (~100 videos).
+    /// Returns nil when the link has no playlist. Reads up to ~5,000 videos.
     static func playlist(from url: URL) async throws -> PlaylistInfo? {
         guard let list = playlistID(in: url) else { return nil }
+        let video = videoID(in: url)
 
-        // watch?v=X&list=Y also covers Mixes (RD...), which have no /playlist page
+        // Mixes (RD...) only exist next to a video; normal playlists have their own page
+        let isMix = list.hasPrefix("RD")
+        var attempts: [() async throws -> PlaylistInfo] = []
+        if isMix, let video {
+            attempts.append { try await apiMix(list: list, video: video) }
+        } else {
+            attempts.append { try await apiPlaylist(list: list) }
+        }
+        attempts.append { try await webPage(list: list, video: isMix ? video : nil) }
+
+        var lastError: Error?
+        for attempt in attempts {
+            do {
+                let info = try await attempt()
+                if !info.items.isEmpty { return info }
+            } catch {
+                lastError = lastError ?? error // keep the first reason, it is usually the clearest
+            }
+        }
+        if let error = lastError as? DownloadError { throw error }
+        throw DownloadError.noStream(AppText.Errors.playlistUnreadable)
+    }
+
+    // MARK: InnerTube (YouTube's internal API)
+
+    private static let apiBase = "https://www.youtube.com/youtubei/v1/"
+
+    private static func api(_ endpoint: String, _ body: [String: Any]) async throws -> Any {
+        var payload = body
+        payload["context"] = ["client": ["clientName": "WEB", "clientVersion": "2.20250925.01.00",
+                                         "hl": "en", "gl": "US"]]
+        var request = URLRequest(url: URL(string: apiBase + endpoint + "?prettyPrint=false")!)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(desktopUA, forHTTPHeaderField: "User-Agent")
+        request.setValue("https://www.youtube.com", forHTTPHeaderField: "Origin")
+        request.setValue("1", forHTTPHeaderField: "X-YouTube-Client-Name")
+        request.setValue("2.20250925.01.00", forHTTPHeaderField: "X-YouTube-Client-Version")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw DownloadError.http(http.statusCode)
+        }
+        return try JSONSerialization.jsonObject(with: data)
+    }
+
+    /// A normal playlist: first page, then "load more" pages until the end.
+    private static func apiPlaylist(list: String) async throws -> PlaylistInfo {
+        var collected = Collected()
+        var response = try await api("browse", ["browseId": "VL" + list])
+        try checkAlerts(response)
+        collected.read(response)
+
+        var pages = 1
+        while let token = collected.nextToken, pages < 50 {
+            collected.nextToken = nil
+            try Task.checkCancellation()
+            response = try await api("browse", ["continuation": token])
+            collected.read(response)
+            pages += 1
+        }
+        return collected.result
+    }
+
+    /// A Mix (RD...): the list YouTube shows next to the video.
+    private static func apiMix(list: String, video: String) async throws -> PlaylistInfo {
+        var collected = Collected()
+        collected.read(try await api("next", ["videoId": video, "playlistId": list]))
+        return collected.result
+    }
+
+    /// YouTube says why a playlist can't be shown (private, deleted...) in an "alert".
+    private static func checkAlerts(_ response: Any) throws {
+        guard let alerts = (response as? [String: Any])?["alerts"] as? [[String: Any]] else { return }
+        for alert in alerts {
+            let box = (alert["alertRenderer"] ?? alert["alertWithButtonRenderer"]) as? [String: Any]
+            if (box?["type"] as? String) == "ERROR", let message = text(box?["text"]) {
+                throw DownloadError.noStream("YouTube: \(message)")
+            }
+        }
+    }
+
+    // MARK: Web page backup
+
+    private static func webPage(list: String, video: String?) async throws -> PlaylistInfo {
         var page = URLComponents(string: "https://www.youtube.com/playlist")!
         page.queryItems = [URLQueryItem(name: "list", value: list)]
-        if let v = videoID(in: url) {
+        if let video {
             page = URLComponents(string: "https://www.youtube.com/watch")!
-            page.queryItems = [URLQueryItem(name: "v", value: v), URLQueryItem(name: "list", value: list)]
+            page.queryItems = [URLQueryItem(name: "v", value: video), URLQueryItem(name: "list", value: list)]
         }
-
         var request = URLRequest(url: page.url!)
         request.setValue(desktopUA, forHTTPHeaderField: "User-Agent")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
@@ -111,25 +196,58 @@ enum YouTubeService {
 
         guard let json = initialData(in: String(decoding: data, as: UTF8.self)),
               let root = try? JSONSerialization.jsonObject(with: Data(json.utf8)) else {
-            throw DownloadError.noStream("Couldn't read the playlist page")
+            throw DownloadError.noStream(AppText.Errors.playlistPageUnreadable)
         }
+        try checkAlerts(root)
+        var collected = Collected()
+        collected.read(root)
+        return collected.result
+    }
 
+    // MARK: Reading the data
+
+    /// Gathers videos, the title and the "load more" token from YouTube's JSON.
+    private struct Collected {
         var items: [PlaylistItem] = []
+        var lockupItems: [PlaylistItem] = []   // YouTube's newer layout, used only if the classic one is missing
         var seen = Set<String>()
         var title: String?
-        walk(root) { key, dict in
-            switch key {
-            case "playlistVideoRenderer", "playlistPanelVideoRenderer":
-                if let id = dict["videoId"] as? String, seen.insert(id).inserted {
-                    items.append(PlaylistItem(id: id, title: text(dict["title"]) ?? id))
+        var nextToken: String?
+
+        var result: PlaylistInfo {
+            PlaylistInfo(title: title ?? "Playlist", items: items.isEmpty ? lockupItems : items)
+        }
+
+        mutating func read(_ root: Any) {
+            YouTubeService.walk(root) { key, dict in
+                switch key {
+                case "playlistVideoRenderer", "playlistPanelVideoRenderer":
+                    if let id = dict["videoId"] as? String, seen.insert(id).inserted {
+                        items.append(PlaylistItem(id: id, title: YouTubeService.text(dict["title"]) ?? id))
+                    }
+                case "lockupViewModel":
+                    if (dict["contentType"] as? String) == "LOCKUP_CONTENT_TYPE_VIDEO",
+                       let id = dict["contentId"] as? String, !seen.contains(id) {
+                        let name = (((dict["metadata"] as? [String: Any])?["lockupMetadataViewModel"] as? [String: Any])?["title"]
+                            as? [String: Any])?["content"] as? String
+                        lockupItems.append(PlaylistItem(id: id, title: name ?? id))
+                    }
+                case "continuationItemRenderer":
+                    if let token = ((dict["continuationEndpoint"] as? [String: Any])?["continuationCommand"]
+                        as? [String: Any])?["token"] as? String {
+                        nextToken = token
+                    }
+                case "playlistMetadataRenderer", "playlist", "playlistHeaderRenderer":
+                    if title == nil {
+                        title = (dict["title"] as? String) ?? YouTubeService.text(dict["title"])
+                    }
+                case "pageHeaderRenderer":
+                    if title == nil, let t = dict["pageTitle"] as? String { title = t }
+                default:
+                    break
                 }
-            case "playlistMetadataRenderer", "playlist":
-                if title == nil, let t = dict["title"] as? String { title = t }
-            default:
-                break
             }
         }
-        return PlaylistInfo(title: title ?? "Playlist", items: items)
     }
 
     /// Cuts the `ytInitialData = {...}` JSON out of the page by matching braces.
@@ -161,7 +279,7 @@ enum YouTubeService {
         return nil
     }
 
-    private static func walk(_ node: Any, _ visit: (String, [String: Any]) -> Void) {
+    nonisolated private static func walk(_ node: Any, _ visit: (String, [String: Any]) -> Void) {
         if let dict = node as? [String: Any] {
             for (key, value) in dict {
                 if let child = value as? [String: Any] { visit(key, child) }
@@ -172,7 +290,7 @@ enum YouTubeService {
         }
     }
 
-    private static func text(_ node: Any?) -> String? {
+    nonisolated private static func text(_ node: Any?) -> String? {
         guard let dict = node as? [String: Any] else { return nil }
         if let simple = dict["simpleText"] as? String { return simple }
         if let runs = dict["runs"] as? [[String: Any]] {
@@ -205,7 +323,7 @@ enum YouTubeService {
                                               into: folder, update: update)
             } catch let error as DownloadError where error.isRetryable && attempt < 3 {
                 attempt += 1
-                update(0, "Temporary error, retrying (\(attempt)/3)...")
+                update(0, AppText.Status.retrying(attempt))
                 try await Task.sleep(for: .seconds(3 * attempt))
             }
         }
@@ -221,7 +339,7 @@ enum YouTubeService {
         into folder: URL,
         update: (Double, String) -> Void
     ) async throws -> DownloadResult {
-        update(0, "Finding streams...")
+        update(0, AppText.Status.findingStreams)
         let (streams, metadata) = try await fetchInfo(videoID: videoID)
         let title = metadata?.title.isEmpty == false ? metadata!.title : videoID
         let name = fileName(title, ext: format.fileExtension)
@@ -236,7 +354,7 @@ enum YouTubeService {
 
         // YouTube's best AAC audio. (Its opus audio is higher quality but can't be saved without FFmpeg.)
         guard let audio = streams.filterAudioOnly().filter({ $0.fileExtension == .m4a }).highestAudioBitrateStream() else {
-            throw DownloadError.noStream("No M4A audio stream available for this video")
+            throw DownloadError.noStream(AppText.Errors.noM4A)
         }
         let artwork = embedArtwork ? await artworkData(videoID: videoID, square: format != .video) : nil
         let audioFile = work.appendingPathComponent("audio.m4a")
@@ -244,11 +362,11 @@ enum YouTubeService {
 
         if format == .audio {
             try await fetch(audio.url, to: audioFile) { update($0, "\(Int($0 * 100))%") }
-            update(1, "Saving...")
+            update(1, AppText.Status.saving)
             try await exportAudio(audioFile, to: output, title: title, artwork: artwork)
         } else if format == .mp3 {
             try await fetch(audio.url, to: audioFile) { update($0 * 0.9, "\(Int($0 * 100))%") }
-            update(0.9, "Converting to MP3...")
+            update(0.9, AppText.Status.convertingMP3)
             // YouTube's audio comes in a streaming-style container; rewrap it as a plain
             // .m4a first so iOS's audio decoder can read it for the MP3 encoder
             let plain = work.appendingPathComponent("plain.m4a")
@@ -256,13 +374,16 @@ enum YouTubeService {
             try await encodeMP3(plain, to: output, bitrate: mp3Bitrate, title: title, artwork: artwork)
         } else {
             guard let video = pickVideo(from: streams, maxHeight: maxHeight) else {
-                throw DownloadError.noStream("No iPhone-playable MP4 video stream available")
+                throw DownloadError.noStream(AppText.Errors.noMP4)
             }
-            let label = video.videoResolution.map { "\($0)p" } ?? "Video"
+            let resolution = video.videoResolution.map { "\($0)p" }
             let videoFile = work.appendingPathComponent("video.mp4")
-            try await fetch(video.url, to: videoFile) { update($0 * 0.85, "\(label) \(Int($0 * 100))%") }
-            try await fetch(audio.url, to: audioFile) { update(0.85 + $0 * 0.15, "Audio \(Int($0 * 100))%") }
-            update(1, "Merging video and audio...")
+            try await fetch(video.url, to: videoFile) { p in
+                let percent = Int(p * 100)
+                update(p * 0.85, resolution.map { "\($0) \(percent)%" } ?? AppText.Status.videoPercent(percent))
+            }
+            try await fetch(audio.url, to: audioFile) { update(0.85 + $0 * 0.15, AppText.Status.audioPercent(Int($0 * 100))) }
+            update(1, AppText.Status.merging)
             try await mux(video: videoFile, audio: audioFile, to: output, title: title, artwork: artwork)
         }
 
@@ -299,12 +420,13 @@ enum YouTubeService {
     }
 
     /// Downloads in 10 MB pieces. YouTube throttles one big request, but serves ranges at full speed.
+    /// With a speed limit set, uses smaller pieces and waits between them.
     static func fetch(_ url: URL, to destination: URL, progress: (Double) -> Void) async throws {
         FileManager.default.createFile(atPath: destination.path, contents: nil)
         let handle = try FileHandle(forWritingTo: destination)
         defer { try? handle.close() }
 
-        let chunk = 10 * 1024 * 1024
+        let chunk = SpeedLimiter.chunkSize
         var offset = 0
         var total: Int?
         while total == nil || offset < total! {
@@ -317,6 +439,7 @@ enum YouTubeService {
 
             try handle.write(contentsOf: data)
             offset += data.count
+            await SpeedLimiter.shared.consume(data.count)
             if http.statusCode == 200 {
                 total = offset // server ignored the range and sent the whole file
             } else if total == nil,
@@ -377,7 +500,7 @@ enum YouTubeService {
     nonisolated static func extractAudio(from video: URL, to output: URL, title: String, artwork: Data?) async throws {
         let asset = AVURLAsset(url: video)
         guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
-            throw DownloadError.noStream("This video has no sound")
+            throw DownloadError.noStream(AppText.Errors.noSound)
         }
         let duration = try await asset.load(.duration)
         let composition = AVMutableComposition()
@@ -480,11 +603,15 @@ enum YouTubeService {
         return nil
     }
 
-    nonisolated static func saveToPhotos(_ file: URL) async throws {
+    nonisolated static func saveToPhotos(_ file: URL, isImage: Bool = false) async throws {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else { throw DownloadError.photosDenied }
         try await PHPhotoLibrary.shared().performChanges {
-            _ = PHAssetCreationRequest.creationRequestForAssetFromVideo(atFileURL: file)
+            if isImage {
+                _ = PHAssetCreationRequest.creationRequestForAssetFromImage(atFileURL: file)
+            } else {
+                _ = PHAssetCreationRequest.creationRequestForAssetFromVideo(atFileURL: file)
+            }
         }
     }
 

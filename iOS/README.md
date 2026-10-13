@@ -1,55 +1,63 @@
 # Media Downloader (iOS)
 
-SwiftUI version of the Media Downloader Toolkit for iPhone (iOS 18+).
-- YouTube tab: YouTubeKit finds the streams; AVFoundation merges/saves them; SwiftLAME makes MP3s.
-- Other Sites tab: Instagram & Facebook (one-time login), Reddit (login optional), X, Streamable,
-  Imgur, Internet Archive, direct media links, and pages with a video tag (Tumblr etc.).
-No yt-dlp or FFmpeg — iPhone apps can't run them.
+SwiftUI version of the Media Downloader Toolkit for iPhone (iOS 18+). Personal use only: it isn't on the App Store.
 
-## Files (all go in the app target, next to Assets.xcassets)
-- MediaDownloaderApp.swift  — app entry + theme
-- ContentView.swift         — red header, gear, dark switch, YouTube / Other Sites tabs
-- YouTubeView.swift         — YouTube tab screen
-- DownloadManager.swift     — YouTube download loop, log, playlist prompt, notifications
-- YouTubeService.swift      — YouTube streams/playlists, chunked download, merge, MP3 encoding
-- PlaylistSheet.swift       — tick-which-videos window
-- OtherSitesView.swift      — Other Sites tab screen
-- OtherSitesManager.swift   — Other Sites download loop
-- SiteExtractors.swift      — site list, shared page helpers, Reddit and X extractors
-- InstagramSupport.swift    — Instagram extractor
-- MoreSites.swift           — Facebook, Streamable, Imgur, Internet Archive, direct links, any-page fallback
-- SiteLogins.swift          — login sites list, login screen, saved sessions, Settings → Accounts
-- SettingsView.swift        — settings (thumbnail, Photos, notifications, Instagram login, theme)
-- Theme.swift               — colors (same as desktop/Android)
+iPhone apps can't run yt-dlp or FFmpeg, so instead:
+- **YouTube:** YouTubeKit finds the streams, the app downloads them in chunks, AVFoundation merges them (no re-encoding), and SwiftLAME makes MP3s.
+- **Other Sites:** small built-in readers for Instagram and Facebook (videos and photos, one-time login), Reddit (videos, photos and galleries, login optional), X, Streamable, Imgur, Internet Archive, direct media links, and pages with a video tag.
 
-## Xcode setup (fresh project)
-1. New Project → iOS → App. Product Name: MediaDownloader, Organization Identifier: com.nil,
-   Interface: SwiftUI, Language: Swift, Storage: None.
-2. Target → General → Minimum Deployments: iOS 18.0.
-3. Target → Signing & Capabilities → Team: your Apple ID; Bundle Identifier: com.nil.mediadownloader
-   (add a suffix if Xcode says it's taken).
-4. Packages (File → Add Package Dependencies…), both added to the MediaDownloader target:
-   - YouTubeKit: https://github.com/alexeichhorn/YouTubeKit (Up to Next Major Version)
-   - SwiftLAME: download https://github.com/hidden-spectrum/SwiftLAME as a ZIP, keep it in a
-     permanent folder (e.g. Documents/MediaDownloader/Packages) and use "Add Local…".
-     (Remote SwiftLAME fails with an "unsafe build flags" error.)
-5. Delete the generated ContentView.swift and MediaDownloaderApp.swift, then drag in all
-   14 .swift files (tick "Copy items if needed").
-6. Target → Info tab → add:
-   - Application supports iTunes file sharing (Boolean) = YES
-   - Supports opening documents in place (Boolean) = YES
-   - Privacy - Photo Library Additions Usage Description (String) = "Saves downloaded videos to Photos."
-7. Assets → AppIcon must be an "iOS App Icon" set (not an Image Set); drop AppIcon-1024.png in.
-   AccentColor: set to #FF0000.
-8. iPhone: Settings → Privacy & Security → Developer Mode → On. Plug in, pick the iPhone, Run.
-   First time: Settings → General → VPN & Device Management → trust your Apple ID.
+Files are saved to **Files → On My iPhone → Media Downloader**.
 
-With a free Apple ID the app stops opening after 7 days — press Run in Xcode again.
+## Features
+
+- YouTube MP3 / M4A / MP4 with a quality picker, plus playlists with a tick-the-videos screen
+- Several downloads at once, a speed limit, and skipping files that already exist
+- Picker for posts with several photos or videos (Instagram carousels, Facebook albums, Reddit galleries, X)
+- **Share sheet:** share a link from any app to Media Downloader to start the download
+- **Clipboard:** copy a YouTube link, open the app, and it asks whether to download it
+- Live Activity with progress on the Lock Screen and in the Dynamic Island, plus a notification when downloads finish
+- History with retry, delete file and share
+- Option to save videos and photos to the Photos app too
+- English, French, Simplified Chinese and Malay
+- Terms & Conditions (asked again every 10 days), a Privacy page and Report a Problem (email or GitHub)
+- Privacy: no servers, no accounts, no analytics. Logins stay on the iPhone and the app never sees your password.
+
+## Project layout
+
+```
+iOS/
+├── MediaDownloader.xcodeproj
+├── MediaDownloader/         App: screens, download logic, site readers
+│   ├── AppText.swift        Every sentence the app shows (English)
+│   ├── Localizable.xcstrings  Translations (fr, zh-Hans, ms), edit in Xcode
+│   └── PrivacyInfo.xcprivacy  Apple privacy manifest
+├── ShareExtension/          "Media Downloader" in the Share sheet
+├── DownloadWidgets/         Live Activity (Lock Screen + Dynamic Island)
+└── AppIcon-1024.png
+```
+
+Xcode uses synchronized folders, so any file dropped into one of these folders is part of that target.
+
+## Build
+
+1. Put the two Swift packages in a folder named `Package` **next to** the `iOS` folder:
+   ```
+   Package/SwiftLAME-0.1.0     https://github.com/hidden-spectrum/SwiftLAME  (download as ZIP)
+   Package/YouTubeKit-0.4.9    https://github.com/alexeichhorn/YouTubeKit   (download as ZIP)
+   iOS/MediaDownloader.xcodeproj
+   ```
+   SwiftLAME has to be a local package, because the remote one fails with an "unsafe build flags" error.
+2. Open `iOS/MediaDownloader.xcodeproj` in Xcode 26 or later.
+3. For each of the three targets (MediaDownloader, ShareExtension, DownloadWidgetsExtension), go to **Signing & Capabilities**, set **Team** to your Apple ID, and change the bundle ID if Xcode says it's taken.
+4. Pick your iPhone and run the **MediaDownloader** scheme. The DownloadWidgetsExtension scheme gives a harmless SpringBoard error.
+5. The first time, turn on **Settings → Privacy & Security → Developer Mode** on the iPhone, then trust your Apple ID under **Settings → General → VPN & Device Management**.
+
+With a free Apple ID the app stops opening after 7 days. Run it from Xcode again to renew.
 
 ## Notes
-- Files appear in Files → On My iPhone → Media Downloader.
-- Logins: Settings → Accounts → pick the site → Log in (once per site).
-- Instagram: videos only; stories not supported.
-- Reddit/X: public posts only.
-- YouTube playlists: first ~100 videos.
-- If YouTube downloads start failing: File → Packages → Update to Latest Package Versions.
+
+- All three targets must have the same Minimum Deployments (iOS 18.0). An extension set to a newer iOS version than the phone silently doesn't install.
+- Info.plist files must not be target members ("Multiple commands produce …/Info.plist").
+- To get Lock Screen progress, turn on Live Activities under Settings → Media Downloader on the iPhone.
+- If YouTube downloads start failing, update YouTubeKit to the latest version.
+- Not possible on iPhone: subtitles, TikTok, and any site that would need yt-dlp.

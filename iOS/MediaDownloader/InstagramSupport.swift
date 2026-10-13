@@ -14,7 +14,7 @@ enum InstagramExtractor: SiteExtractor {
 
     static func extract(_ url: URL, maxHeight: Int?) async throws -> [SiteMedia] {
         guard let cookie = await SiteLogin.cookieHeader(for: .instagram) else {
-            throw DownloadError.noStream("Log in to Instagram first: Settings (gear) → Accounts → Instagram")
+            throw DownloadError.noStream(AppText.Errors.instagramLogin)
         }
 
         var postURL = url
@@ -22,7 +22,7 @@ enum InstagramExtractor: SiteExtractor {
             postURL = try await resolve(url, cookie: cookie) // share links redirect to the post
         }
         guard let code = shortcode(in: postURL), let mediaID = mediaID(from: code) else {
-            throw DownloadError.noStream("That's not a link to an Instagram post or Reel (stories aren't supported)")
+            throw DownloadError.noStream(AppText.Errors.instagramBadLink)
         }
 
         var request = URLRequest(url: URL(string: "https://www.instagram.com/api/v1/media/\(mediaID)/info/")!)
@@ -37,12 +37,12 @@ enum InstagramExtractor: SiteExtractor {
         let (data, response) = try await URLSession.shared.data(for: request)
         let http = response as? HTTPURLResponse
         if http?.url?.path.hasPrefix("/accounts/login") == true || http?.statusCode == 401 {
-            throw DownloadError.noStream("Instagram logged you out. Log in again: Settings → Accounts")
+            throw DownloadError.noStream(AppText.Errors.instagramLoggedOut)
         }
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         if let message = json?["message"] as? String, http?.statusCode != 200 {
             if message.contains("login_required") {
-                throw DownloadError.noStream("Instagram logged you out. Log in again: Settings → Accounts")
+                throw DownloadError.noStream(AppText.Errors.instagramLoggedOut)
             }
             throw DownloadError.noStream("Instagram: \(message)")
         }
@@ -50,25 +50,31 @@ enum InstagramExtractor: SiteExtractor {
             throw DownloadError.http(code)
         }
         guard let item = (json?["items"] as? [[String: Any]])?.first else {
-            throw DownloadError.noStream("Instagram didn't return this post (private account you don't follow?)")
+            throw DownloadError.noStream(AppText.Errors.instagramNoPost)
         }
 
         let user = ((item["user"] as? [String: Any])?["username"] as? String) ?? "instagram"
         let caption = ((item["caption"] as? [String: Any])?["text"] as? String) ?? ""
         let title = makeTitle(user: user, caption: caption, code: code)
 
-        // A carousel holds several items; a single post is just itself
+        // A carousel holds several photos/videos; a single post is just itself
         let parts = (item["carousel_media"] as? [[String: Any]]) ?? [item]
-        let videos = parts.compactMap { part -> (URL, Bool)? in
-            guard let pick = bestVideo(part["video_versions"] as? [[String: Any]] ?? [], maxHeight: maxHeight) else { return nil }
-            return (pick, (part["has_audio"] as? Bool) == false)
+        let found = parts.compactMap { part -> SiteMedia? in
+            let images = (part["image_versions2"] as? [String: Any])?["candidates"] as? [[String: Any]] ?? []
+            let thumbnail = smallImage(images)
+            if let video = bestVideo(part["video_versions"] as? [[String: Any]] ?? [], maxHeight: maxHeight) {
+                return SiteMedia(title: title, videoURL: video, audioURL: nil,
+                                 silent: (part["has_audio"] as? Bool) == false, thumbnailURL: thumbnail)
+            }
+            guard let photo = largestImage(images) else { return nil }
+            return SiteMedia(title: title, videoURL: photo, audioURL: nil, silent: true,
+                             isImage: true, thumbnailURL: thumbnail)
         }
-        guard !videos.isEmpty else {
-            throw DownloadError.noStream("This post only has photos (only videos are downloaded)")
-        }
-        return videos.enumerated().map { index, video in
-            SiteMedia(title: videos.count > 1 ? "\(title) (\(index + 1))" : title,
-                      videoURL: video.0, audioURL: nil, silent: video.1)
+        guard !found.isEmpty else { throw DownloadError.noStream(AppText.Errors.instagramEmpty) }
+        guard found.count > 1 else { return found }
+        return found.enumerated().map { index, media in
+            SiteMedia(title: "\(title) (\(index + 1))", videoURL: media.videoURL, audioURL: nil, silent: media.silent,
+                      isImage: media.isImage, thumbnailURL: media.thumbnailURL)
         }
     }
 
@@ -114,6 +120,19 @@ enum InstagramExtractor: SiteExtractor {
         let fitting = options.filter { $0.1 <= limit }
         let best = fitting.isEmpty ? options.min(by: { $0.1 < $1.1 }) : fitting.max(by: { $0.1 < $1.1 })
         return best?.0
+    }
+
+    /// Full-size photo: the widest version.
+    private static func largestImage(_ candidates: [[String: Any]]) -> URL? {
+        candidates.max { ($0["width"] as? Int ?? 0) < ($1["width"] as? Int ?? 0) }
+            .flatMap { ($0["url"] as? String).flatMap(URL.init(string:)) }
+    }
+
+    /// A small version for the picker grid (about 320 px wide).
+    private static func smallImage(_ candidates: [[String: Any]]) -> URL? {
+        let sorted = candidates.sorted { ($0["width"] as? Int ?? 0) < ($1["width"] as? Int ?? 0) }
+        let pick = sorted.first { ($0["width"] as? Int ?? 0) >= 320 } ?? sorted.last
+        return pick.flatMap { ($0["url"] as? String).flatMap(URL.init(string:)) }
     }
 
     private static func makeTitle(user: String, caption: String, code: String) -> String {

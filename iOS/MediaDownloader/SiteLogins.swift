@@ -45,9 +45,9 @@ enum LoginSite: String, CaseIterable, Identifiable {
     /// Shown under the dropdown in Settings.
     var note: String {
         switch self {
-        case .instagram: return "Needed for all Instagram downloads."
-        case .facebook: return "Needed for most Facebook videos (public ones may work without it)."
-        case .reddit: return "Optional. Helps when Reddit blocks downloads, and needed for 18+ posts."
+        case .instagram: return AppText.Accounts.instagramNote
+        case .facebook: return AppText.Accounts.facebookNote
+        case .reddit: return AppText.Accounts.redditNote
         }
     }
 }
@@ -70,7 +70,12 @@ enum SiteLogin {
     }
 
     static func isLoggedIn(_ site: LoginSite) async -> Bool {
-        await cookies(for: site).contains { $0.name == site.sessionCookie && !$0.value.isEmpty }
+        await sessionValue(for: site) != nil
+    }
+
+    /// The login cookie's value, or nil when not logged in.
+    static func sessionValue(for site: LoginSite) async -> String? {
+        await cookies(for: site).first { $0.name == site.sessionCookie && !$0.value.isEmpty }?.value
     }
 
     /// "Cookie:" header value, or nil when not logged in.
@@ -96,23 +101,29 @@ struct SiteLoginView: View {
         NavigationStack {
             LoginWebView(url: site.loginURL)
                 .ignoresSafeArea(edges: .bottom)
-                .navigationTitle("Log in to \(site.name)")
+                .safeAreaInset(edge: .top, spacing: 0) { LoginNotice(site: site.name) }
+                .navigationTitle(AppText.Accounts.logInTo(site.name))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { onDone(false) }
+                        Button(AppText.Common.cancel) { onDone(false) }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(AppText.Common.done) { onDone(true) }
                     }
                 }
         }
         .task {
-            // Check once a second until the login cookie shows up
+            // Close by itself only when a NEW login appears, so an old leftover cookie
+            // can't shut the page before you've typed anything
+            let before = await SiteLogin.sessionValue(for: site)
             while !Task.isCancelled {
-                if await SiteLogin.isLoggedIn(site) {
+                try? await Task.sleep(for: .seconds(1))
+                if let now = await SiteLogin.sessionValue(for: site), now != before {
                     try? await Task.sleep(for: .seconds(1.5)) // let the site finish setting its other cookies
                     onDone(true)
                     return
                 }
-                try? await Task.sleep(for: .seconds(1))
             }
         }
     }
@@ -141,7 +152,7 @@ struct AccountsSection: View {
 
     var body: some View {
         Section {
-            Picker("Site", selection: $site) {
+            Picker(AppText.Accounts.site, selection: $site) {
                 ForEach(LoginSite.allCases) { s in
                     Text(loggedIn.contains(s) ? "\(s.name) ✓" : s.name).tag(s)
                 }
@@ -149,31 +160,33 @@ struct AccountsSection: View {
             .pickerStyle(.menu)
 
             HStack {
-                Text(loggedIn.contains(site) ? "Logged in" : "Not logged in")
+                Text(loggedIn.contains(site) ? AppText.Accounts.loggedIn : AppText.Accounts.notLoggedIn)
                     .foregroundStyle(loggedIn.contains(site) ? Color.primary : Color.muted)
                 Spacer()
                 if loggedIn.contains(site) {
-                    Button("Log out", role: .destructive) {
+                    Button(AppText.Accounts.logOut, role: .destructive) {
                         Task {
                             await SiteLogin.logOut(site)
                             await refresh()
                         }
                     }
                 } else {
-                    Button("Log in") { loginSheet = site }
+                    Button(AppText.Accounts.logIn) { loginSheet = site }
+                }
+            }
+            // On this one row, not the whole Section: modifiers on a Section get copied to
+            // every row, and several copies of one sheet can open and instantly close it
+            .task { await refresh() }
+            .sheet(item: $loginSheet) { s in
+                SiteLoginView(site: s) { _ in
+                    loginSheet = nil
+                    Task { await refresh() }
                 }
             }
         } header: {
-            Text("Accounts")
+            InfoHeader(AppText.Accounts.title, info: AppText.Info.accounts)
         } footer: {
-            Text("\(site.note) You log in on the site's own page, so your password goes to the site, not this app. Logins are only used for the links you paste.")
-        }
-        .task { await refresh() }
-        .sheet(item: $loginSheet) { s in
-            SiteLoginView(site: s) { _ in
-                loginSheet = nil
-                Task { await refresh() }
-            }
+            Text(site.note)
         }
     }
 
