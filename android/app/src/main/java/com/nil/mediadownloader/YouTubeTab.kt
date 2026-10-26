@@ -126,6 +126,7 @@ class YouTubeState {
             if (atOnce > 1) task.addLog(tr(R.string.log_at_once, atOnce))
             val label = { n: Int -> "[${n + 1}/${jobs.size}]" }
             tracker.show(task, label)
+            task.queueItems(jobs.map { it.queueItem() })
             runLimited(task, jobs, atOnce) { n, entry ->
                 download(context, entry, n, o, existing, tracker, File(workRoot, "$n"), label)
             }
@@ -149,10 +150,12 @@ class YouTubeState {
         label: (Int) -> String,
     ) {
         val tag = label(n)
+        val item = entry.queueItem()
         // Skip before downloading anything, from the title
         if (o.skipExisting) {
             val name = Downloader.expectedFileName(entry.title, o.format)
             if (name in existing) {
+                task.end(item)
                 task.addLog(tr(R.string.log_skipped_exists, tag, entry.title))
                 HistoryStore.add(task.name, entry.title, entry.url, HistoryStatus.SKIPPED, detail = tr(R.string.already_in_folder), fileName = name)
                 tracker.skipped++
@@ -164,6 +167,7 @@ class YouTubeState {
 
         tracker.active[n] = 0f to tr(R.string.starting)
         tracker.show(task, label)
+        task.begin(item)
         try {
             val file = withRetries(task, tag) {
                 withContext(Dispatchers.IO) {
@@ -198,6 +202,7 @@ class YouTubeState {
                 tracker.failed++
             }
         } finally {
+            task.end(item)
             tracker.active.remove(n)
             tracker.finished++
             tracker.show(task, label)
@@ -223,6 +228,7 @@ fun YouTubeTab(state: YouTubeState, scope: CoroutineScope, modifier: Modifier = 
     ) {
         UrlHeader(stringResource(R.string.yt_links_label), idle, onPaste = { state.urlText = appendLine(state.urlText, it) })
         UrlBox(state.urlText, { state.urlText = it }, enabled = idle, placeholder = "https://youtu.be/...")
+        LinkCards(state.urlText, idle) { state.urlText = it }
 
         SaveFolderRow(folderUri, enabled = idle) { uri ->
             folderUri = uri
@@ -246,6 +252,10 @@ private fun preselect(url: String, entries: List<VideoEntry>): Set<Int> {
     return if (idx >= 0) setOf(idx) else entries.indices.toSet()
 }
 
+/** For the progress ring; flat playlists sometimes leave out the thumbnail, so build it from the ID. */
+private fun VideoEntry.queueItem() =
+    QueueItem(title, detail, thumbnail ?: YouTubeLinks.videoId(url)?.let { YouTubeLinks.thumbnail(it) })
+
 /** Recognizes YouTube links, for routing shared links and spotting them on the clipboard. */
 object YouTubeLinks {
     fun isYouTube(link: String): Boolean {
@@ -263,6 +273,12 @@ object YouTubeLinks {
                 else -> null
             }
     } catch (e: Exception) { null }
+
+    fun thumbnail(videoId: String) = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+
+    /** The 320×180 version of a YouTube thumbnail (about a third of the size), for small list rows. */
+    fun smallThumbnail(url: String) =
+        if ("i.ytimg.com/vi/" in url) url.replace(Regex("/(hq|sd|maxres)default\\.jpg"), "/mqdefault.jpg") else url
 
     fun playlistId(url: String): String? = try { Uri.parse(url).getQueryParameter("list") } catch (e: Exception) { null }
 }
