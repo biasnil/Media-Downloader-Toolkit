@@ -6,7 +6,7 @@ bundled yt-dlp, Python and FFmpeg from [youtubedl-android](https://github.com/Ju
 ## Features
 
 - **YouTube:** MP3 / M4A / WAV / MP4 with a quality picker, playlists with a tick-the-videos screen, skip files that already exist
-- **Other Sites:** anything yt-dlp supports (Instagram, X, Reddit, TikTok, Facebook...), with a picker for posts holding several videos
+- **Other Sites:** anything yt-dlp supports (Instagram, X, Reddit, TikTok, Facebook...), with a grid picker for posts holding several items. Links with no video offer their pictures instead (Instagram, Facebook and other pages, public posts only)
 - **Spotify:** each song is matched to its closest YouTube upload (Spotify audio is copy-protected). Playlist and album links list their songs; Exportify CSV/ZIP import for private or long playlists. Files are tagged with Spotify's title and artist
 - **Utility:** Normalizer, Converter, Cover (add / remove / save), Tag editor, Trim & fade, Speed & pitch (slowed + reverb, nightcore), Effects (bass boost, volume, remove silence)
 - Several downloads at once, a speed limit, background downloads with a progress notification

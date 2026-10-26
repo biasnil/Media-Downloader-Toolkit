@@ -43,15 +43,24 @@ private val KNOWN_SITES = listOf(
 )
 private val KNOWN_DOMAINS = KNOWN_SITES.flatMap { it.second }
 
-/** One link to download, with the items ticked in a post that holds several (null = all of it). */
-private class SiteJob(val url: String, val items: String?)
+/**
+ * One link to download, with the items ticked in a post that holds several (null = all of it).
+ * [pictures] set: the link had no video, so these picture links are saved instead.
+ */
+private class SiteJob(
+    val url: String,
+    val items: String?,
+    val pictures: List<String>? = null,
+    val pictureSite: String? = null,
+    val pictureTitle: String? = null,
+)
 
 /** Runs Other Sites downloads and holds what that tab shows. */
 class OtherSitesState {
     var urlText by mutableStateOf("")
     val task = TaskState(R.string.tab_other)
-    /** A post with several videos, waiting for the user to tick which ones they want. */
-    var picker by mutableStateOf<PlaylistPrompt?>(null)
+    /** A post with several photos/videos, waiting for the user to tick which ones they want. */
+    var picker by mutableStateOf<MediaPrompt?>(null)
 
     fun prefs(context: Context): SharedPreferences = context.getSharedPreferences("other_sites_tab", Context.MODE_PRIVATE)
 
@@ -106,7 +115,8 @@ class OtherSitesState {
             withContext(Dispatchers.IO) { Downloader.existingNames(context, o.folder) }.toMutableSet()
         } catch (e: Exception) { mutableSetOf() }
 
-        // 1. Look inside every link first: a post with several videos asks which ones you want
+        // 1. Look inside every link first: a post with several videos asks which ones you want,
+        //    and a link with no video offers its pictures instead (like iOS)
         val jobs = mutableListOf<SiteJob>()
         for ((i, url) in urls.withIndex()) {
             if (task.cancelled) break
@@ -120,30 +130,49 @@ class OtherSitesState {
                 break
             } catch (e: Exception) {
                 if (task.cancelled) break
-                // Some sites can only download, not list. That's fine: get the whole post
+                null
+            }
+
+            if (info != null && info.entries.isNotEmpty()) {
+                if (info.entries.size == 1) {
+                    jobs += SiteJob(url, null)
+                    continue
+                }
+                val picked = ask(
+                    MediaPrompt(
+                        info.playlistTitle ?: tr(R.string.this_post),
+                        info.entries.map { PickItem(it.title, it.thumbnail, isImage = false) },
+                        info.entries.indices.toSet(),
+                    ),
+                    tag,
+                ) ?: if (task.cancelled) break else continue
+                task.addLog(tr(R.string.log_items_picked, tag, picked.size, info.entries.size))
+                // yt-dlp counts items from 1
+                jobs += SiteJob(url, if (picked.size == info.entries.size) null else picked.joinToString(",") { "${it + 1}" })
+                continue
+            }
+
+            // yt-dlp found no video to list: look for pictures at the link instead
+            task.addLog(tr(R.string.log_no_video_pictures, tag))
+            val found = withContext(Dispatchers.IO) { try { PageImages.find(url) } catch (e: Exception) { null } }
+            if (found == null) {
+                task.addLog(tr(if (PageImages.isInstagramOrFacebook(url)) R.string.log_not_public else R.string.log_no_pictures, tag))
+                // Still try downloading, so the log shows yt-dlp's own reason if that fails too
                 jobs += SiteJob(url, null)
                 continue
             }
-            if (info.entries.size <= 1) {
-                jobs += SiteJob(url, null)
-                continue
+            val chosen = if (found.images.size == 1) listOf(0) else {
+                ask(
+                    MediaPrompt(
+                        found.title,
+                        found.images.map { PickItem(found.title, it.url, isImage = true) },
+                        found.images.indices.filter { found.images[it].preferred }.toSet(),
+                    ),
+                    tag,
+                ) ?: if (task.cancelled) break else continue
             }
-            val prompt = PlaylistPrompt(
-                info.playlistTitle ?: tr(R.string.this_post), info.entries, info.entries.indices.toSet(),
-                countText = R.string.picker_count_items,
-            )
-            picker = prompt
-            task.status = tr(R.string.status_waiting_pick, tag)
-            val picked = prompt.answer.await()
-            picker = null
-            if (picked == null) {
-                if (task.cancelled) break
-                task.addLog(tr(R.string.log_skipped, tag))
-                continue
-            }
-            task.addLog(tr(R.string.log_items_picked, tag, picked.size, info.entries.size))
-            // yt-dlp counts items from 1
-            jobs += SiteJob(url, if (picked.size == info.entries.size) null else picked.joinToString(",") { "${it + 1}" })
+            task.addLog(tr(R.string.log_pictures_found, tag, chosen.size))
+            jobs += SiteJob(url, null, chosen.map { found.images[it].url }, found.site, found.title)
         }
 
         // 2. Download them, several at once if set in Settings
@@ -186,6 +215,10 @@ class OtherSitesState {
         val item = job.queueItem()
         task.begin(item)
         try {
+            if (job.pictures != null) {
+                savePictures(context, url, job.pictureSite ?: site, job.pictureTitle ?: site, job.pictures, n, o, existing, tracker, workDir, label)
+                return
+            }
             val files = withRetries(task, tag) {
                 withContext(Dispatchers.IO) {
                     Downloader.downloadAny(task, url, job.items, o, workDir, progressCallback(AppState.scope) { f, text ->
@@ -215,7 +248,7 @@ class OtherSitesState {
             if (task.cancelled) {
                 task.addLog(tr(R.string.log_cancelled, tag))
                 HistoryStore.add(site, url, url, HistoryStatus.CANCELLED)
-            } else {
+            } else if (!(looksLikeNoVideo(e, o) && picturesInstead(context, url, n, o, existing, tracker, workDir, label))) {
                 logFailure(context, task, tag, e)
                 HistoryStore.add(site, url, url, HistoryStatus.FAILED, detail = errorReason(e))
                 tracker.failed++
@@ -228,12 +261,93 @@ class OtherSitesState {
             workDir.deleteRecursively()
         }
     }
+
+    /** Shows the grid picker; null (and a log line) when skipped. */
+    private suspend fun ask(prompt: MediaPrompt, tag: String): List<Int>? {
+        picker = prompt
+        task.status = tr(R.string.status_waiting_pick, tag)
+        val picked = prompt.answer.await()
+        picker = null
+        if (picked == null && !task.cancelled) task.addLog(tr(R.string.log_skipped, tag))
+        return picked
+    }
+
+    /**
+     * yt-dlp listed the post but the download had no video in it (e.g. an Instagram photo in a carousel).
+     * Saves the post's pictures instead, without asking (downloads may be running side by side).
+     * Returns false when there were none, so the failure is reported as usual.
+     */
+    private suspend fun picturesInstead(
+        context: Context, url: String, n: Int, o: DownloadOptions,
+        existing: MutableSet<String>, tracker: BatchTracker, workDir: File, label: (Int) -> String,
+    ): Boolean {
+        val found = withContext(Dispatchers.IO) { try { PageImages.find(url) } catch (e: Exception) { null } } ?: return false
+        val links = found.images.filter { it.preferred }.ifEmpty { found.images }.map { it.url }
+        task.addLog(tr(R.string.log_saving_pictures_instead, label(n), links.size))
+        try {
+            savePictures(context, url, found.site, found.title, links, n, o, existing, tracker, workDir, label)
+        } catch (c: YoutubeDL.CanceledException) {
+            // Called from a catch block, so nothing above would catch this one
+            task.addLog(tr(R.string.log_cancelled, label(n)))
+        }
+        return true
+    }
+
+    /** Downloads and saves pictures, one file each: "Instagram - user (2).jpg". */
+    private suspend fun savePictures(
+        context: Context, url: String, site: String, title: String, links: List<String>, n: Int, o: DownloadOptions,
+        existing: MutableSet<String>, tracker: BatchTracker, workDir: File, label: (Int) -> String,
+    ) {
+        val tag = label(n)
+        for ((k, link) in links.withIndex()) {
+            if (task.cancelled) break
+            val base = pictureName(if (links.size > 1) "$title (${k + 1})" else title)
+            // The extension comes from the site, so compare names without it
+            if (o.skipExisting && existing.any { it.substringBeforeLast('.') == base }) {
+                task.addLog(tr(R.string.log_skipped_exists, tag, base))
+                HistoryStore.add(site, base, url, HistoryStatus.SKIPPED, detail = tr(R.string.already_in_folder))
+                tracker.skipped++
+                continue
+            }
+            tracker.update(task, n, k.toFloat() / links.size, tr(R.string.status_picture, k + 1, links.size), label)
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    PageImages.download(task, link, url, workDir, base) { f ->
+                        AppState.scope.launch { tracker.update(task, n, (k + f) / links.size, tr(R.string.status_picture, k + 1, links.size), label) }
+                    }
+                }
+                val saved = withContext(Dispatchers.IO) { Downloader.save(context, file, o.folder) }
+                existing += file.name
+                task.addLog(tr(R.string.log_done, tag, file.name))
+                HistoryStore.add(site, base, url, HistoryStatus.DONE, fileName = file.name, fileUri = saved)
+                tracker.done++
+            } catch (e: YoutubeDL.CanceledException) {
+                throw e
+            } catch (e: Exception) {
+                if (task.cancelled) throw YoutubeDL.CanceledException()
+                task.addLog(tr(R.string.log_failed, tag, "$base: ${e.message ?: e.javaClass.simpleName}"))
+                HistoryStore.add(site, base, url, HistoryStatus.FAILED, detail = e.message)
+                tracker.failed++
+            }
+        }
+    }
 }
 
-/** The site's name and the link; the preview card's thumbnail when one was found. */
+/** yt-dlp's ways of saying there's nothing to download as a video at this link. */
+private fun looksLikeNoVideo(e: Exception, o: DownloadOptions): Boolean {
+    if (e.message == tr(R.string.err_no_file, o.format)) return true
+    val reason = errorReason(e).lowercase()
+    return listOf("no video", "unsupported url", "no media", "there is no video", "there's no video").any { it in reason }
+}
+
+/** A safe file name for a picture (no characters phones reject). */
+private fun pictureName(text: String): String =
+    text.replace(Regex("""[\\/:*?"<>|\n\r\t]"""), "_").replace(Regex("\\s+"), " ").trim().take(100).ifBlank { "picture" }
+
+/** The site's name and the link; the preview card's thumbnail (or the first picture) when there is one. */
 private fun SiteJob.queueItem(): QueueItem {
     val site = KNOWN_SITES.firstOrNull { (_, domains) -> domains.any { it in url } }?.first
-    return QueueItem(site ?: LinkPreviews.siteName(url), url, LinkPreviews.cached(url)?.thumbnail)
+    return QueueItem(pictureTitle ?: site ?: LinkPreviews.siteName(url), url, pictures?.firstOrNull() ?: LinkPreviews.cached(url)?.thumbnail)
 }
 
 @Composable

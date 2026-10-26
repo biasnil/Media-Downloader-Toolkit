@@ -386,4 +386,16 @@
     <string name="err_cover_image">Impossible d\'utiliser cette image : %1$s</string>
     <string name="skip_no_cover_format">%1$s : ce type de fichier ne peut pas contenir de pochette (seuls MP3, M4A et FLAC le peuvent).</string>
     <string name="skip_no_cover">%1$s : ce fichier n\'a pas de pochette.</string>
+    <string name="log_no_video_pictures">%1$s Pas de vidéo ici, recherche d\'images…</string>
+    <string name="log_no_pictures">%1$s Aucune image trouvée sur cette page non plus.</string>
+    <string name="log_not_public">%1$s Impossible de lire cette publication. Elle est peut-être privée, ou visible seulement une fois connecté.</string>
+    <string name="log_pictures_found">%1$s Enregistrement de %2$d image(s).</string>
+    <string name="log_saving_pictures_instead">%1$s Pas de vidéo dans cette publication, enregistrement de ses %2$d image(s) à la place.</string>
+    <string name="status_picture">Image %1$d sur %2$d</string>
+    <string name="picker_count_photos">%1$d photos. Cochez celles que vous voulez.</string>
+    <string name="picker_mix">%1$d photos · %2$d vidéos</string>
+    <string name="photos_only">Photos uniquement</string>
+    <string name="videos_only">Vidéos uniquement</string>
+    <string name="tile_photo">Photo</string>
+    <string name="tile_video">Vidéo</string>
 </resources>

@@ -93,7 +93,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 AppState.otherSites.picker?.let { prompt ->
-                    PlaylistDialog(
+                    MediaPickerDialog(
                         prompt = prompt,
                         onConfirm = { prompt.answer.complete(it) },
                         onCancel = { prompt.answer.complete(null) },

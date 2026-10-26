@@ -390,4 +390,16 @@
     <string name="err_cover_image">Couldn\'t use that picture: %1$s</string>
     <string name="skip_no_cover_format">%1$s: this file type can\'t hold a cover (only MP3, M4A and FLAC can).</string>
     <string name="skip_no_cover">%1$s: there\'s no cover in this file.</string>
+    <string name="log_no_video_pictures">%1$s No video here, looking for pictures...</string>
+    <string name="log_no_pictures">%1$s No pictures found on this page either.</string>
+    <string name="log_not_public">%1$s Couldn\'t read this post. It may be private, or only shown to logged-in visitors.</string>
+    <string name="log_pictures_found">%1$s Saving %2$d picture(s).</string>
+    <string name="log_saving_pictures_instead">%1$s No video in this post, saving its %2$d picture(s) instead.</string>
+    <string name="status_picture">Picture %1$d of %2$d</string>
+    <string name="picker_count_photos">%1$d photos. Tick the ones you want.</string>
+    <string name="picker_mix">%1$d photos · %2$d videos</string>
+    <string name="photos_only">Photos only</string>
+    <string name="videos_only">Videos only</string>
+    <string name="tile_photo">Photo</string>
+    <string name="tile_video">Video</string>
 </resources>

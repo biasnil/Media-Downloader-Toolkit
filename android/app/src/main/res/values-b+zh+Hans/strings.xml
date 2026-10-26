@@ -386,4 +386,16 @@
     <string name="err_cover_image">无法使用该图片：%1$s</string>
     <string name="skip_no_cover_format">%1$s：此文件类型无法包含封面（只有 MP3、M4A 和 FLAC 可以）。</string>
     <string name="skip_no_cover">%1$s：此文件没有封面。</string>
+    <string name="log_no_video_pictures">%1$s 这里没有视频，正在查找图片…</string>
+    <string name="log_no_pictures">%1$s 此页面上也没有找到图片。</string>
+    <string name="log_not_public">%1$s 无法读取此帖子。它可能是私密的，或只对已登录的访客显示。</string>
+    <string name="log_pictures_found">%1$s 正在保存 %2$d 张图片。</string>
+    <string name="log_saving_pictures_instead">%1$s 此帖子没有视频，改为保存其中的 %2$d 张图片。</string>
+    <string name="status_picture">第 %1$d / %2$d 张图片</string>
+    <string name="picker_count_photos">%1$d 张照片。勾选你想要的。</string>
+    <string name="picker_mix">%1$d 张照片 · %2$d 个视频</string>
+    <string name="photos_only">仅照片</string>
+    <string name="videos_only">仅视频</string>
+    <string name="tile_photo">照片</string>
+    <string name="tile_video">视频</string>
 </resources>

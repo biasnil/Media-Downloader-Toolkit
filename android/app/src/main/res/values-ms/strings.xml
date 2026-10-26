@@ -386,4 +386,16 @@
     <string name="err_cover_image">Tidak dapat menggunakan gambar itu: %1$s</string>
     <string name="skip_no_cover_format">%1$s: jenis fail ini tidak boleh menyimpan kulit album (hanya MP3, M4A dan FLAC boleh).</string>
     <string name="skip_no_cover">%1$s: tiada kulit album dalam fail ini.</string>
+    <string name="log_no_video_pictures">%1$s Tiada video di sini, mencari gambar...</string>
+    <string name="log_no_pictures">%1$s Tiada gambar ditemui di halaman ini juga.</string>
+    <string name="log_not_public">%1$s Tidak dapat membaca siaran ini. Ia mungkin peribadi, atau hanya dipaparkan kepada pelawat yang log masuk.</string>
+    <string name="log_pictures_found">%1$s Menyimpan %2$d gambar.</string>
+    <string name="log_saving_pictures_instead">%1$s Tiada video dalam siaran ini, menyimpan %2$d gambarnya sebagai ganti.</string>
+    <string name="status_picture">Gambar %1$d daripada %2$d</string>
+    <string name="picker_count_photos">%1$d foto. Tandakan yang anda mahu.</string>
+    <string name="picker_mix">%1$d foto · %2$d video</string>
+    <string name="photos_only">Foto sahaja</string>
+    <string name="videos_only">Video sahaja</string>
+    <string name="tile_photo">Foto</string>
+    <string name="tile_video">Video</string>
 </resources>
