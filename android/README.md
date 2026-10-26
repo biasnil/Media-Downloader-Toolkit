@@ -1,27 +1,39 @@
 # Media Downloader (Android)
 
-Kotlin / Jetpack Compose port of the Media Downloader Toolkit's YouTube and Other Sites tabs.
+Kotlin / Jetpack Compose version of the Media Downloader Toolkit for Android 11+ (API 30). Downloads run on the
+bundled yt-dlp, Python and FFmpeg from [youtubedl-android](https://github.com/JunkFood02/youtubedl-android).
 
-## What's in this zip
-Everything written for the app, laid out at its real project path:
+## Features
 
-- `app/src/main/java/com/nil/mediadownloader/` — all 9 Kotlin source files
-- `app/src/main/AndroidManifest.xml` — permissions + DownloadService
-- `app/build.gradle.kts` — ABI filters, legacy JNI packaging, dependencies
-- `gradle/libs.versions.toml.additions` — the version-catalog lines to merge into your own libs.versions.toml
+- **YouTube:** MP3 / M4A / WAV / MP4 with a quality picker, playlists with a tick-the-videos screen, skip files that already exist
+- **Other Sites:** anything yt-dlp supports (Instagram, X, Reddit, TikTok, Facebook...), with a picker for posts holding several videos
+- **Spotify:** each song is matched to its closest YouTube upload (Spotify audio is copy-protected). Playlist and album links list their songs; Exportify CSV/ZIP import for private or long playlists. Files are tagged with Spotify's title and artist
+- **Utility:** Normalizer, Converter, Cover (add / remove / save), Tag editor, Trim & fade, Speed & pitch (slowed + reverb, nightcore), Effects (bass boost, volume, remove silence)
+- Several downloads at once, a speed limit, background downloads with a progress notification
+- **Share sheet:** share a link to Media Downloader to start it. **Clipboard:** copied YouTube/Spotify links are offered when the app opens
+- History with retry, open, share and delete
+- English, French, Simplified Chinese and Malay (Settings → Language)
+- Update check: Settings → About → Version (only when tapped)
+- Terms & Conditions, Privacy, Acknowledgements and Report a Problem (email or GitHub)
 
-Not included (Android Studio generates these, and yours already work): the Gradle
-wrapper, root build files, `res/` (icons, themes, strings, backup rules), and the
-rest of `libs.versions.toml`.
+## Build
 
-## Starting from a fresh project
-1. New Project → Empty Activity, package `com.nil.mediadownloader`, minimum SDK API 30.
-2. Copy this zip's `app/` folder over the new project's `app/` folder.
-3. Merge `gradle/libs.versions.toml.additions` into `gradle/libs.versions.toml`.
-4. Sync Gradle, then Build → Rebuild Project.
+1. Open this `android` folder in Android Studio.
+2. Let Gradle sync, then **Build → Build APK(s)**.
+3. Test on a real phone or an API 34 (4 KB page size) emulator. The bundled FFmpeg can't load on 16 KB page-size
+   images (the newer API 36/37 emulators).
 
-## Notes
-- Test on a real phone or an API 34 (4 KB page) emulator. The bundled FFmpeg
-  can't load on 16 KB page-size images (the newer API 36/37 emulators).
-- Keep your signing keystore (.jks) and its passwords safe — updates must be
-  signed with the same key.
+## Releasing an update
+
+1. In `app/build.gradle.kts`, raise `versionName` (e.g. `1.0.1`) **and** `versionCode` (2, 3, ...). Android won't
+   install an update with the same `versionCode`.
+2. Build the release APK, signed with the **same keystore** as before. Keep the `.jks` and its passwords safe:
+   without them, phones can't update the app.
+3. Create a GitHub release tagged **`Androidv1.0.1`** and attach the APK.
+
+The app's update check only looks at tags starting with `Androidv`, so the Windows releases (`1.1.0` etc.) are ignored.
+
+## Translations
+
+Text lives in `app/src/main/res/values*/strings.xml`: `values` (English), `values-fr`, `values-b+zh+Hans` and
+`values-ms`. A string missing from a language falls back to English.

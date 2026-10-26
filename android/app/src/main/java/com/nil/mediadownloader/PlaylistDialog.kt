@@ -1,5 +1,7 @@
 package com.nil.mediadownloader
 
+import androidx.annotation.StringRes
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,6 +12,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -17,8 +22,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import coil3.compose.AsyncImage
+import kotlinx.coroutines.CompletableDeferred
 
-/** Mobile version of desktop's playlist_dialog.py: tick videos, or pick a numbered range. */
+/**
+ * A list waiting for the user to tick which items they want: a YouTube playlist, a Spotify
+ * playlist/album, or a post with several videos. [countText] is the "N videos/songs/items..." line.
+ */
+class PlaylistPrompt(
+    val title: String,
+    val entries: List<VideoEntry>,
+    val preselected: Set<Int>,
+    @param:StringRes val countText: Int = R.string.picker_count_videos,
+    val answer: CompletableDeferred<List<Int>?> = CompletableDeferred(),
+)
+
+/** Mobile version of desktop's playlist_dialog.py: tick items, or pick a numbered range. */
 @Composable
 fun PlaylistDialog(prompt: PlaylistPrompt, onConfirm: (List<Int>) -> Unit, onCancel: () -> Unit) {
     val colors = MaterialTheme.colorScheme
@@ -38,16 +57,16 @@ fun PlaylistDialog(prompt: PlaylistPrompt, onConfirm: (List<Int>) -> Unit, onCan
         ) {
             Column(Modifier.padding(16.dp)) {
                 Text(prompt.title, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text("$count videos. Tick the ones you want.", color = colors.onSurfaceVariant, fontSize = 13.sp)
+                Text(stringResource(prompt.countText, count), color = colors.onSurfaceVariant, fontSize = 13.sp)
 
                 // Quick range select
                 Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("#")
                     NumberField(from) { from = it }
-                    Text("to #")
+                    Text(stringResource(R.string.range_to))
                     NumberField(to) { to = it }
                     Spacer(Modifier.width(8.dp))
-                    PrimaryButton("Apply") {
+                    PrimaryButton(stringResource(R.string.apply)) {
                         val a = from.toIntOrNull()?.coerceIn(1, count) ?: return@PrimaryButton
                         val b = to.toIntOrNull()?.coerceIn(1, count) ?: return@PrimaryButton
                         val range = minOf(a, b)..maxOf(a, b)
@@ -55,8 +74,8 @@ fun PlaylistDialog(prompt: PlaylistPrompt, onConfirm: (List<Int>) -> Unit, onCan
                     }
                 }
                 Row {
-                    TextButton(onClick = { for (i in 0 until count) checked[i] = true }) { Text("Select all", color = colors.primary) }
-                    TextButton(onClick = { for (i in 0 until count) checked[i] = false }) { Text("Select none", color = colors.primary) }
+                    TextButton(onClick = { for (i in 0 until count) checked[i] = true }) { Text(stringResource(R.string.select_all), color = colors.primary) }
+                    TextButton(onClick = { for (i in 0 until count) checked[i] = false }) { Text(stringResource(R.string.select_none), color = colors.primary) }
                 }
 
                 LazyColumn(
@@ -74,18 +93,33 @@ fun PlaylistDialog(prompt: PlaylistPrompt, onConfirm: (List<Int>) -> Unit, onCan
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Checkbox(checked = checked[i], onCheckedChange = { checked[i] = it })
+                            entry.thumbnail?.let { url ->
+                                AsyncImage(
+                                    model = url,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .padding(end = 8.dp)
+                                        .size(width = 64.dp, height = 48.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(colors.surfaceVariant),
+                                )
+                            }
                             Column {
                                 Text("${i + 1}. ${entry.title}", fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Text(entry.url, fontSize = 11.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                val subtitle = entry.detail ?: entry.url
+                                if (subtitle.isNotBlank()) {
+                                    Text(subtitle, fontSize = 11.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                             }
                         }
                     }
                 }
 
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SecondaryButton("Skip playlist", Modifier.weight(1f), onClick = onCancel)
+                    SecondaryButton(stringResource(R.string.skip), Modifier.weight(1f), onClick = onCancel)
                     PrimaryButton(
-                        "Download ($selectedCount)",
+                        stringResource(R.string.download_count, selectedCount),
                         Modifier.weight(1f),
                         enabled = selectedCount > 0,
                     ) { onConfirm(checked.indices.filter { checked[it] }) }

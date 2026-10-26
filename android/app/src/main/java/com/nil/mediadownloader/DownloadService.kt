@@ -12,6 +12,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -37,38 +38,35 @@ class DownloadService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        Lang.refresh(this) // the Cancel button can start this before any screen has
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
-            Downloader.cancel()
-            AppState.youtube.playlistPrompt?.answer?.complete(null)
-            activeTask?.status = "Cancelling..."
+            AppState.cancelAll()
             return START_NOT_STICKY
         }
 
         // Android requires startForeground() promptly after starting, so always call it first
-        val task = activeTask
         ensureChannel(this)
-        startForeground(
-            ONGOING_ID,
-            buildProgress(this, task?.status ?: "Starting...", task?.progress ?: 0f),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-        )
-        if (task == null) { stopSelf(); return START_NOT_STICKY } // download already ended
+        startForeground(ONGOING_ID, buildProgress(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        if (activeTasks.isEmpty()) { stopSelf(); return START_NOT_STICKY } // downloads already ended
         if (wakeLock == null) {
             wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MediaDownloader:download")
                 .apply { acquire(6 * 60 * 60 * 1000L) } // safety cap of 6 hours
         }
 
-        // Mirror the tab's status/progress into the notification, at most ~once a second
-        watcher?.cancel()
-        watcher = scope.launch {
-            snapshotFlow { task.status to task.progress }.conflate().collect { (status, progress) ->
-                // Don't redraw after the download ended, or a stuck "ongoing" notification could remain
-                if (activeTask === task) {
-                    notifyIfAllowed(this@DownloadService, ONGOING_ID, buildProgress(this@DownloadService, status, progress))
+        // Mirror the tabs' status/progress into the notification, at most ~once a second
+        if (watcher == null) {
+            watcher = scope.launch {
+                snapshotFlow { activeTasks.map { it.status to it.progress } }.conflate().collect {
+                    // Don't redraw after downloads ended, or a stuck "ongoing" notification could remain
+                    if (activeTasks.isNotEmpty()) notifyIfAllowed(this@DownloadService, ONGOING_ID, buildProgress(this@DownloadService))
+                    delay(1000)
                 }
-                delay(1000)
             }
         }
         return START_NOT_STICKY
@@ -76,7 +74,7 @@ class DownloadService : Service() {
 
     // Android 15+ limits this kind of service to 6 hours a day
     override fun onTimeout(startId: Int, fgsType: Int) {
-        Downloader.cancel()
+        AppState.cancelAll()
         stopSelf()
     }
 
@@ -92,47 +90,61 @@ class DownloadService : Service() {
         private const val FINISHED_ID = 2
         private const val ACTION_CANCEL = "com.nil.mediadownloader.CANCEL"
 
-        /** The tab whose download is running, so the notification can follow it. */
-        @Volatile var activeTask: TaskState? = null
+        /** The tabs whose downloads are running, so the notification can follow them. */
+        val activeTasks = mutableStateListOf<TaskState>()
 
         fun start(context: Context, task: TaskState) {
-            activeTask = task
+            if (task !in activeTasks) activeTasks += task
             ContextCompat.startForegroundService(context, Intent(context, DownloadService::class.java))
         }
 
-        /** Stops the service and leaves a "finished" notification behind. */
-        fun finish(context: Context, summary: String) {
-            activeTask = null
-            context.stopService(Intent(context, DownloadService::class.java))
+        /**
+         * Stops following [task] (and stops the service once no tab is downloading), then
+         * leaves a "finished" notification if that's turned on and the app isn't on screen.
+         */
+        fun finish(context: Context, task: TaskState) {
+            if (activeTasks.remove(task) && activeTasks.isEmpty()) {
+                context.stopService(Intent(context, DownloadService::class.java))
+            }
+            if (!AppSettings.notifyWhenDone || AppState.inForeground) return
             ensureChannel(context)
             val done = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setContentTitle("Downloads finished")
-                .setContentText(summary)
+                .setContentTitle(tr(R.string.notif_finished, task.name))
+                .setContentText(task.status)
                 .setContentIntent(openAppIntent(context))
                 .setAutoCancel(true)
                 .build()
-            notifyIfAllowed(context, FINISHED_ID, done)
+            // One per tab, so finishing both doesn't hide the first
+            notifyIfAllowed(context, FINISHED_ID + AppState.tasks.indexOf(task).coerceAtLeast(0), done)
         }
 
         private fun ensureChannel(context: Context) {
-            val channel = NotificationChannel(CHANNEL_ID, "Downloads", NotificationManager.IMPORTANCE_LOW)
-                .apply { description = "Progress of ongoing downloads" }
+            val channel = NotificationChannel(CHANNEL_ID, tr(R.string.channel_name), NotificationManager.IMPORTANCE_LOW)
+                .apply { description = tr(R.string.channel_desc) }
             context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
 
-        private fun buildProgress(context: Context, status: String, progress: Float) =
-            NotificationCompat.Builder(context, CHANNEL_ID)
+        private fun buildProgress(context: Context): android.app.Notification {
+            val tasks = activeTasks.toList()
+            val text = when {
+                tasks.isEmpty() -> tr(R.string.starting)
+                tasks.size == 1 -> tasks[0].status
+                else -> tasks.joinToString("\n") { "${it.name}: ${it.status}" }
+            }
+            val progress = if (tasks.isEmpty()) 0f else tasks.map { it.progress }.average().toFloat()
+            return NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle("Downloading...")
-                .setContentText(status)
+                .setContentTitle(tr(R.string.notif_downloading))
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setProgress(100, (progress * 100).toInt(), progress <= 0f)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setSilent(true)
                 .setContentIntent(openAppIntent(context))
                 .addAction(
-                    0, "Cancel",
+                    0, tr(R.string.cancel),
                     PendingIntent.getService(
                         context, 1,
                         Intent(context, DownloadService::class.java).setAction(ACTION_CANCEL),
@@ -140,6 +152,7 @@ class DownloadService : Service() {
                     )
                 )
                 .build()
+        }
 
         private fun openAppIntent(context: Context): PendingIntent = PendingIntent.getActivity(
             context, 0,

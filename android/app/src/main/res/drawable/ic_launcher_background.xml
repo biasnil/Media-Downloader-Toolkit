@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Red top-to-bottom gradient, same as the iOS and desktop icon -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:startColor="#FFF40D0D"
+        android:endColor="#FFC60004" />
+</shape>

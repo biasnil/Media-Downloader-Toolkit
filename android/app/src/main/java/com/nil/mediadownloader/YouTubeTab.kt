@@ -1,157 +1,218 @@
 package com.nil.mediadownloader
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.yausername.youtubedl_android.YoutubeDL
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-// label shown in the UI to value passed to yt-dlp
-private val MP3_QUALITIES = listOf("320 kbps" to "320K", "256 kbps" to "256K", "192 kbps" to "192K", "128 kbps" to "128K")
-private val MP4_QUALITIES = listOf("Best available" to "best", "1080p" to "1080", "720p" to "720", "480p" to "480", "360p" to "360")
-
-/** A playlist waiting for the user to tick which videos they want. */
-class PlaylistPrompt(
-    val title: String,
-    val entries: List<VideoEntry>,
-    val preselected: Set<Int>,
-    val answer: CompletableDeferred<List<Int>?> = CompletableDeferred(),
-)
-
-/** Everything the YouTube tab needs to survive switching tabs mid-download. */
+/** Runs YouTube downloads and holds everything the tab shows, so it survives switching tabs mid-download. */
 class YouTubeState {
     var urlText by mutableStateOf("")
-    val task = TaskState()
+    val task = TaskState(R.string.tab_youtube)
     var playlistPrompt by mutableStateOf<PlaylistPrompt?>(null)
+
+    fun prefs(context: Context): SharedPreferences = context.getSharedPreferences("youtube_tab", Context.MODE_PRIVATE)
+
+    /** The Download button: everything in the link box. */
+    fun start(context: Context) {
+        val urls = linesOf(urlText)
+        if (urls.isEmpty()) { task.status = tr(R.string.yt_paste_link); return }
+        start(context, urls)
+    }
+
+    /** A link shared from another app, the clipboard, or History. Waits its turn if a download is running. */
+    fun enqueue(context: Context, link: String) {
+        if (task.running) {
+            task.queued += link
+            task.addLog(tr(R.string.log_queued, link))
+        } else {
+            task.addLog(tr(R.string.log_link_received))
+            start(context, listOf(link))
+        }
+    }
+
+    fun cancel() {
+        task.queued.clear()
+        playlistPrompt?.answer?.complete(null)
+        Downloader.cancel(task)
+        if (task.running) task.status = tr(R.string.status_cancelling)
+    }
+
+    private fun start(context: Context, links: List<String>) {
+        if (task.running) return
+        val app = context.applicationContext
+        startJob(app, task)
+        AppState.scope.launch {
+            var batch = links
+            while (true) {
+                // Read the settings now, so changing them mid-download can't mix things up
+                run(app, batch, savedOptions(app, prefs(app), "mp3"))
+                if (task.cancelled || task.queued.isEmpty()) break
+                batch = task.queued.toList()
+                task.queued.clear()
+            }
+            endJob(app, task)
+        }
+    }
+
+    private suspend fun run(context: Context, urls: List<String>, o: DownloadOptions) {
+        if (!prepare(context, task)) return
+        val existing = try {
+            withContext(Dispatchers.IO) { Downloader.existingNames(context, o.folder) }.toMutableSet()
+        } catch (e: Exception) { mutableSetOf() }
+
+        // 1. Work out every video first (playlists ask which videos you want)
+        val jobs = mutableListOf<VideoEntry>()
+        var failedLinks = 0
+        for ((i, url) in urls.withIndex()) {
+            if (task.cancelled) break
+            val tag = "[${i + 1}/${urls.size}]"
+            task.status = tr(R.string.status_reading_link, tag)
+            task.addLog("$tag $url")
+
+            val info = try {
+                withRetries(task, tag) { withContext(Dispatchers.IO) { Downloader.listEntries(task, url) } }
+            } catch (e: Exception) {
+                if (task.cancelled) break
+                logFailure(context, task, tag, e)
+                HistoryStore.add(task.name, url, url, HistoryStatus.FAILED, detail = errorReason(e))
+                failedLinks++
+                continue
+            }
+            if (info.entries.isEmpty()) {
+                task.addLog(tr(R.string.log_nothing_at_link, tag))
+                HistoryStore.add(task.name, url, url, HistoryStatus.FAILED, detail = tr(R.string.nothing_at_link))
+                failedLinks++
+                continue
+            }
+
+            // Playlist: let the user tick which videos they want, like desktop
+            if (info.entries.size == 1) {
+                jobs += info.entries
+            } else {
+                val prompt = PlaylistPrompt(info.playlistTitle ?: tr(R.string.playlist_default), info.entries, preselect(url, info.entries))
+                playlistPrompt = prompt
+                task.status = tr(R.string.status_waiting_playlist, tag)
+                val picked = prompt.answer.await()
+                playlistPrompt = null
+                if (picked == null) {
+                    if (task.cancelled) break
+                    task.addLog(tr(R.string.log_playlist_skipped, tag))
+                    continue
+                }
+                task.addLog(tr(R.string.log_playlist_picked, tag, picked.size, info.entries.size, prompt.title))
+                jobs += picked.map { info.entries[it] }
+            }
+        }
+
+        // 2. Download them, several at once if set in Settings
+        val tracker = BatchTracker(jobs.size).apply { failed = failedLinks }
+        val workRoot = File(context.cacheDir, "work-youtube")
+        if (jobs.isNotEmpty() && !task.cancelled) {
+            val atOnce = o.atOnce.coerceAtMost(jobs.size)
+            if (atOnce > 1) task.addLog(tr(R.string.log_at_once, atOnce))
+            val label = { n: Int -> "[${n + 1}/${jobs.size}]" }
+            tracker.show(task, label)
+            runLimited(task, jobs, atOnce) { n, entry ->
+                download(context, entry, n, o, existing, tracker, File(workRoot, "$n"), label)
+            }
+        }
+
+        workRoot.deleteRecursively()
+        task.progress = 0f
+        task.status = if (task.cancelled) tr(R.string.status_yt_cancelled, tracker.done)
+        else tr(R.string.status_yt_finished, tracker.done, tracker.skipped, tracker.failed)
+    }
+
+    /** One video: skip check, download, save, history. */
+    private suspend fun download(
+        context: Context,
+        entry: VideoEntry,
+        n: Int,
+        o: DownloadOptions,
+        existing: MutableSet<String>,
+        tracker: BatchTracker,
+        workDir: File,
+        label: (Int) -> String,
+    ) {
+        val tag = label(n)
+        // Skip before downloading anything, from the title
+        if (o.skipExisting) {
+            val name = Downloader.expectedFileName(entry.title, o.format)
+            if (name in existing) {
+                task.addLog(tr(R.string.log_skipped_exists, tag, entry.title))
+                HistoryStore.add(task.name, entry.title, entry.url, HistoryStatus.SKIPPED, detail = tr(R.string.already_in_folder), fileName = name)
+                tracker.skipped++
+                tracker.finished++
+                tracker.show(task, label)
+                return
+            }
+        }
+
+        tracker.active[n] = 0f to tr(R.string.starting)
+        tracker.show(task, label)
+        try {
+            val file = withRetries(task, tag) {
+                withContext(Dispatchers.IO) {
+                    Downloader.downloadYouTube(task, entry, o, workDir, progressCallback(AppState.scope) { f, text ->
+                        tracker.update(task, n, f, text, label)
+                    })
+                }
+            }
+            // Backup check, in case the real file name differs from our guess
+            if (o.skipExisting && file.name in existing) {
+                file.delete()
+                task.addLog(tr(R.string.log_skipped_exists, tag, file.name))
+                HistoryStore.add(task.name, entry.title, entry.url, HistoryStatus.SKIPPED, detail = tr(R.string.already_in_folder), fileName = file.name)
+                tracker.skipped++
+                return
+            }
+            val saved = withContext(Dispatchers.IO) { Downloader.save(context, file, o.folder) }
+            existing += file.name
+            task.addLog(tr(R.string.log_done, tag, file.name))
+            HistoryStore.add(task.name, file.nameWithoutExtension, entry.url, HistoryStatus.DONE, fileName = file.name, fileUri = saved)
+            tracker.done++
+        } catch (e: YoutubeDL.CanceledException) {
+            task.addLog(tr(R.string.log_cancelled, tag))
+            HistoryStore.add(task.name, entry.title, entry.url, HistoryStatus.CANCELLED)
+        } catch (e: Exception) {
+            if (task.cancelled) {
+                task.addLog(tr(R.string.log_cancelled, tag))
+                HistoryStore.add(task.name, entry.title, entry.url, HistoryStatus.CANCELLED)
+            } else {
+                logFailure(context, task, tag, e)
+                HistoryStore.add(task.name, entry.title, entry.url, HistoryStatus.FAILED, detail = errorReason(e))
+                tracker.failed++
+            }
+        } finally {
+            tracker.active.remove(n)
+            tracker.finished++
+            tracker.show(task, label)
+            workDir.deleteRecursively()
+        }
+    }
 }
 
 @Composable
 fun YouTubeTab(state: YouTubeState, scope: CoroutineScope, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val task = state.task
-    val prefs = remember { context.getSharedPreferences("youtube_tab", Context.MODE_PRIVATE) }
-
-    // Settings, remembered between launches like config.json on desktop
-    var format by remember { mutableStateOf(prefs.getString("format", "mp3") ?: "mp3") }
-    var mp3Quality by remember { mutableStateOf(prefs.getString("mp3_quality", null) ?: MP3_QUALITIES[0].first) }
-    var mp4Quality by remember { mutableStateOf(prefs.getString("mp4_quality", null) ?: MP4_QUALITIES[0].first) }
-    var skipExisting by remember { mutableStateOf(prefs.getBoolean("skip_existing", true)) }
+    val prefs = remember { state.prefs(context) }
     var folderUri by remember { mutableStateOf(loadSavedFolder(context, prefs.getString("folder", null))) }
-
-    val qualities = if (format == "mp3") MP3_QUALITIES else MP4_QUALITIES
-    val qualityLabel = if (format == "mp3") mp3Quality else mp4Quality
-    val idle = !Downloader.busy
-
-    state.playlistPrompt?.let { prompt ->
-        PlaylistDialog(
-            prompt = prompt,
-            onConfirm = { prompt.answer.complete(it) },
-            onCancel = { prompt.answer.complete(null) },
-        )
-    }
-
-    fun startDownload() {
-        val urls = state.urlText.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        if (urls.isEmpty()) { task.status = "Paste at least one YouTube link."; return }
-
-        // Snapshot the settings so changing them mid-download can't mix things up
-        val fmt = format
-        val quality = qualities.firstOrNull { it.first == qualityLabel }?.second ?: qualities[0].second
-        val skip = skipExisting
-        val folder = folderUri
-        val workDir = File(context.cacheDir, "work")
-
-        startJob(context, task)
-        scope.launch {
-            if (!prepare(context, task)) { endJob(context, task); return@launch }
-            val existing = try {
-                withContext(Dispatchers.IO) { Downloader.existingNames(context, folder) }.toMutableSet()
-            } catch (e: Exception) { mutableSetOf() }
-
-            var done = 0; var skipped = 0; var failed = 0
-            for ((i, url) in urls.withIndex()) {
-                if (Downloader.cancelled) break
-                val tag = "[${i + 1}/${urls.size}]"
-                task.status = "$tag Reading link..."
-                task.log.add("$tag $url")
-
-                val info = try {
-                    withRetries(task, tag) { withContext(Dispatchers.IO) { Downloader.listEntries(url) } }
-                } catch (e: Exception) {
-                    if (Downloader.cancelled) break
-                    logFailure(context, task, tag, e)
-                    failed++
-                    continue
-                }
-                if (info.entries.isEmpty()) { task.log.add("$tag Nothing to download at this link."); failed++; continue }
-
-                // Playlist: let the user tick which videos they want, like desktop
-                val chosen = if (info.entries.size == 1) info.entries else {
-                    val prompt = PlaylistPrompt(info.playlistTitle ?: "Playlist", info.entries, preselect(url, info.entries))
-                    state.playlistPrompt = prompt
-                    task.status = "$tag Waiting for playlist selection..."
-                    val picked = prompt.answer.await()
-                    state.playlistPrompt = null
-                    if (picked == null) { task.log.add("$tag Playlist skipped."); continue }
-                    task.log.add("$tag ${picked.size} of ${info.entries.size} videos selected from \"${prompt.title}\"")
-                    picked.map { info.entries[it] }
-                }
-
-                for ((j, entry) in chosen.withIndex()) {
-                    if (Downloader.cancelled) break
-                    val label = if (chosen.size > 1) "$tag ${j + 1}/${chosen.size}" else tag
-                    if (skip && Downloader.expectedFileName(entry.title, fmt) in existing) {
-                        task.log.add("$label Skipped (already exists): ${entry.title}")
-                        skipped++
-                        continue
-                    }
-                    task.progress = 0f
-                    try {
-                        val file = withRetries(task, label) {
-                            withContext(Dispatchers.IO) {
-                                Downloader.downloadYouTube(entry, fmt, quality, workDir, progressCallback(scope, task, label))
-                            }
-                        }
-                        // Backup check, in case the real file name differs from our guess
-                        if (skip && file.name in existing) {
-                            file.delete()
-                            task.log.add("$label Skipped (already exists): ${file.name}")
-                            skipped++
-                            continue
-                        }
-                        withContext(Dispatchers.IO) { Downloader.save(context, file, folder) }
-                        existing += file.name
-                        task.log.add("$label Done: ${file.name}")
-                        done++
-                    } catch (e: YoutubeDL.CanceledException) {
-                        task.log.add("$label Cancelled")
-                    } catch (e: Exception) {
-                        if (Downloader.cancelled) { task.log.add("$label Cancelled"); break }
-                        logFailure(context, task, label, e)
-                        failed++
-                    }
-                }
-            }
-
-            File(context.cacheDir, "work").deleteRecursively()
-            task.status = if (Downloader.cancelled) "Cancelled. $done downloaded."
-            else "Finished: $done downloaded, $skipped skipped, $failed failed."
-            endJob(context, task)
-        }
-    }
+    val idle = !task.running
 
     Column(
         modifier
@@ -160,7 +221,7 @@ fun YouTubeTab(state: YouTubeState, scope: CoroutineScope, modifier: Modifier = 
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
     ) {
-        SectionLabel("YouTube URL(s), one per line")
+        UrlHeader(stringResource(R.string.yt_links_label), idle, onPaste = { state.urlText = appendLine(state.urlText, it) })
         UrlBox(state.urlText, { state.urlText = it }, enabled = idle, placeholder = "https://youtu.be/...")
 
         SaveFolderRow(folderUri, enabled = idle) { uri ->
@@ -168,30 +229,9 @@ fun YouTubeTab(state: YouTubeState, scope: CoroutineScope, modifier: Modifier = 
             prefs.edit().apply { if (uri == null) remove("folder") else putString("folder", uri.toString()) }.apply()
         }
 
-        Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Format:")
-            Spacer(Modifier.width(6.dp))
-            Picker(format, listOf("mp3", "mp4"), enabled = idle) {
-                format = it
-                prefs.edit().putString("format", it).apply()
-            }
-            Spacer(Modifier.width(16.dp))
-            Text("Quality:")
-            Spacer(Modifier.width(6.dp))
-            Picker(qualityLabel, qualities.map { it.first }, enabled = idle) {
-                if (format == "mp3") { mp3Quality = it; prefs.edit().putString("mp3_quality", it).apply() }
-                else { mp4Quality = it; prefs.edit().putString("mp4_quality", it).apply() }
-            }
-        }
+        FormatOptions(prefs, "mp3", idle, m4aNote = stringResource(R.string.best_aac))
 
-        CheckRow("Skip files that already exist", skipExisting, idle) {
-            skipExisting = it
-            prefs.edit().putBoolean("skip_existing", it).apply()
-        }
-
-        ActionButtons(task, folderUri, onDownload = { startDownload() }, onCancel = {
-            state.playlistPrompt?.answer?.complete(null)
-        })
+        ActionButtons(task, folderUri, onDownload = { state.start(context) }, onCancel = { state.cancel() })
         ProgressAndLog(task, scope)
     }
 }
@@ -201,12 +241,28 @@ fun YouTubeTab(state: YouTubeState, scope: CoroutineScope, modifier: Modifier = 
  * that one song, not the whole mix). For a plain playlist link, pre-tick everything.
  */
 private fun preselect(url: String, entries: List<VideoEntry>): Set<Int> {
-    val wanted = videoIdOf(url) ?: return entries.indices.toSet()
-    val idx = entries.indexOfFirst { videoIdOf(it.url) == wanted }
+    val wanted = YouTubeLinks.videoId(url) ?: return entries.indices.toSet()
+    val idx = entries.indexOfFirst { YouTubeLinks.videoId(it.url) == wanted }
     return if (idx >= 0) setOf(idx) else entries.indices.toSet()
 }
 
-private fun videoIdOf(url: String): String? = try {
-    val uri = Uri.parse(url)
-    uri.getQueryParameter("v") ?: if (uri.host?.contains("youtu.be") == true) uri.lastPathSegment else null
-} catch (e: Exception) { null }
+/** Recognizes YouTube links, for routing shared links and spotting them on the clipboard. */
+object YouTubeLinks {
+    fun isYouTube(link: String): Boolean {
+        val host = try { Uri.parse(link.trim()).host?.lowercase() ?: "" } catch (e: Exception) { "" }
+        return host.endsWith("youtube.com") || host == "youtu.be" || host.endsWith("youtube-nocookie.com")
+    }
+
+    fun videoId(url: String): String? = try {
+        val uri = Uri.parse(url)
+        val segments = uri.pathSegments
+        uri.getQueryParameter("v")
+            ?: when {
+                uri.host?.contains("youtu.be") == true -> segments.firstOrNull()
+                segments.size >= 2 && segments[0] in listOf("shorts", "live", "embed") -> segments[1]
+                else -> null
+            }
+    } catch (e: Exception) { null }
+
+    fun playlistId(url: String): String? = try { Uri.parse(url).getQueryParameter("list") } catch (e: Exception) { null }
+}
