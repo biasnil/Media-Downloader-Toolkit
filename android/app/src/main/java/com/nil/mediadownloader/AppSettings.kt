@@ -17,8 +17,8 @@ import kotlinx.coroutines.SupervisorJob
 object AppSettings {
     private lateinit var prefs: SharedPreferences
 
-    /** null = follow the phone's theme until the user flips the switch. */
-    var darkMode by mutableStateOf<Boolean?>(null)
+    /** null = follow the phone (Light or Dark). */
+    var theme by mutableStateOf<ThemeChoice?>(ThemeChoice.DEFAULT)
         private set
     var embedThumbnail by mutableStateOf(false)
         private set
@@ -52,7 +52,12 @@ object AppSettings {
     fun init(context: Context) {
         if (::prefs.isInitialized) return
         prefs = context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
-        darkMode = if (prefs.contains("dark_mode")) prefs.getBoolean("dark_mode", false) else null
+        theme = when {
+            prefs.contains("theme") -> ThemeChoice.of(prefs.getString("theme", null))
+            // Older versions only had a dark switch: keep what was picked there
+            prefs.contains("dark_mode") -> if (prefs.getBoolean("dark_mode", false)) ThemeChoice.DARK else ThemeChoice.LIGHT
+            else -> ThemeChoice.DEFAULT
+        }
         embedThumbnail = prefs.getBoolean("embed_thumbnail", false)
         downloadSubtitles = prefs.getBoolean("download_subtitles", false)
         subtitleLangs = prefs.getString("subtitle_langs", "en") ?: "en"
@@ -75,9 +80,10 @@ object AppSettings {
         prefs.edit().putString("spotify_search_tags", value).apply()
     }
 
-    fun updateDarkMode(value: Boolean?) {
-        darkMode = value
-        prefs.edit().apply { if (value == null) remove("dark_mode") else putBoolean("dark_mode", value) }.apply()
+    /** [value] null = follow the phone. */
+    fun updateTheme(value: ThemeChoice?) {
+        theme = value
+        prefs.edit().putString("theme", value?.key ?: "follow").remove("dark_mode").apply()
     }
 
     fun updateEmbedThumbnail(value: Boolean) {
@@ -138,6 +144,8 @@ object AppState {
     var tab by mutableIntStateOf(0)
     var showSettings by mutableStateOf(false)
     var showHistory by mutableStateOf(false)
+    /** Phones: the Activity screen from the bottom bar instead of the tabs. */
+    var showActivity by mutableStateOf(false)
     var showTerms by mutableStateOf(false)
     /** A shared link that arrived before the Terms were agreed to. */
     var pendingLink: String? = null
@@ -150,6 +158,14 @@ object AppState {
     val anyPrompt: Boolean
         get() = youtube.playlistPrompt != null || otherSites.picker != null ||
             spotify.tracksPrompt != null || spotify.choicePrompt != null || spotify.matchPrompt != null
+
+    /** The Cancel button on the Activity panel/screen, for tab [i]. */
+    fun cancelTab(i: Int) = when (i) {
+        0 -> youtube.cancel()
+        1 -> otherSites.cancel()
+        2 -> spotify.cancel()
+        else -> utility.cancel()
+    }
 
     fun cancelAll() {
         youtube.cancel()

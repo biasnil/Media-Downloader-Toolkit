@@ -1,6 +1,10 @@
 package com.nil.mediadownloader
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -8,6 +12,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -49,7 +55,7 @@ fun SettingsDialog(onClose: () -> Unit) {
 
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(24.dp),
             color = colors.background,
             modifier = Modifier.fillMaxWidth(0.95f),
         ) {
@@ -137,10 +143,12 @@ fun SettingsDialog(onClose: () -> Unit) {
                     ) { i -> if (codes[i] != current) context.findActivity()?.let { Lang.set(it, codes[i]) } }
 
                     SectionLabel(stringResource(R.string.theme))
-                    val mode = AppSettings.darkMode
-                    RadioRow(stringResource(R.string.follow_phone_setting), mode == null, true) { AppSettings.updateDarkMode(null) }
-                    RadioRow(stringResource(R.string.light), mode == false, true) { AppSettings.updateDarkMode(false) }
-                    RadioRow(stringResource(R.string.dark_theme), mode == true, true) { AppSettings.updateDarkMode(true) }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ThemeChoice.entries.forEach { choice ->
+                            ThemeSwatch(choice, selected = AppSettings.theme == choice) { AppSettings.updateTheme(choice) }
+                        }
+                    }
+                    RadioRow(stringResource(R.string.follow_phone_setting), AppSettings.theme == null, true) { AppSettings.updateTheme(null) }
 
                     SectionLabel(stringResource(R.string.about))
                     AboutLink(stringResource(R.string.report_problem)) { report = ProblemReport() }
@@ -205,6 +213,37 @@ private fun UpdateDialog(result: UpdateChecker.Result, onClose: () -> Unit) {
             if (newer != null) TextButton(onClick = onClose) { Text(stringResource(R.string.update_later)) }
         },
     )
+}
+
+/** A theme's background with its accent dot, and its name underneath. */
+@Composable
+private fun ThemeSwatch(choice: ThemeChoice, selected: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val p = choice.palette
+    Column(
+        Modifier
+            .width(64.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier
+                .size(56.dp)
+                .border(if (selected) 3.dp else 1.dp, if (selected) colors.primary else colors.outline, RoundedCornerShape(16.dp))
+                .padding(4.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(p.background),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(Modifier.size(22.dp).background(p.accent, CircleShape))
+        }
+        Text(
+            stringResource(choice.label),
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
 }
 
 @Composable

@@ -154,6 +154,7 @@ class OtherSitesState {
             if (atOnce > 1) task.addLog(tr(R.string.log_at_once, atOnce))
             val label = { n: Int -> "[${n + 1}/${jobs.size}]" }
             tracker.show(task, label)
+            task.queueItems(jobs.map { it.queueItem() })
             runLimited(task, jobs, atOnce) { n, job ->
                 download(context, job, n, o, existing, tracker, File(workRoot, "$n"), label)
             }
@@ -182,6 +183,8 @@ class OtherSitesState {
 
         tracker.active[n] = 0f to tr(R.string.starting)
         tracker.show(task, label)
+        val item = job.queueItem()
+        task.begin(item)
         try {
             val files = withRetries(task, tag) {
                 withContext(Dispatchers.IO) {
@@ -218,12 +221,19 @@ class OtherSitesState {
                 tracker.failed++
             }
         } finally {
+            task.end(item)
             tracker.active.remove(n)
             tracker.finished++
             tracker.show(task, label)
             workDir.deleteRecursively()
         }
     }
+}
+
+/** The site's name and the link; the preview card's thumbnail when one was found. */
+private fun SiteJob.queueItem(): QueueItem {
+    val site = KNOWN_SITES.firstOrNull { (_, domains) -> domains.any { it in url } }?.first
+    return QueueItem(site ?: LinkPreviews.siteName(url), url, LinkPreviews.cached(url)?.thumbnail)
 }
 
 @Composable
@@ -248,6 +258,7 @@ fun OtherSitesTab(state: OtherSitesState, scope: CoroutineScope, modifier: Modif
             extra = { SitesMenu() },
         )
         UrlBox(state.urlText, { state.urlText = it }, enabled = idle, placeholder = stringResource(R.string.other_placeholder))
+        LinkCards(state.urlText, idle) { state.urlText = it }
 
         SaveFolderRow(folderUri, enabled = idle) { uri ->
             folderUri = uri

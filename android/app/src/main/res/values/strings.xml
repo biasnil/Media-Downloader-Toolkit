@@ -270,6 +270,24 @@
     <string name="follow_phone_setting">Follow phone setting</string>
     <string name="light">Light</string>
     <string name="dark_theme">Dark</string>
+    <string name="theme_default">Default</string>
+    <string name="theme_sakura">Sakura</string>
+    <string name="theme_blue">Blue</string>
+    <string name="view_log">View log</string>
+    <string name="hide_log">Hide log</string>
+    <string name="nav_sources">SOURCES</string>
+    <string name="nav_library">LIBRARY</string>
+    <string name="activity">Activity</string>
+    <string name="ready_to_download">Ready to download</string>
+    <string name="remove_link">Remove link</string>
+    <string name="nothing_downloading">Nothing downloading</string>
+    <string name="up_next">UP NEXT</string>
+    <string name="more_count">+%1$d more</string>
+    <string name="nav_download">Download</string>
+    <plurals name="link_count">
+        <item quantity="one">%1$d link</item>
+        <item quantity="other">%1$d links</item>
+    </plurals>
     <string name="about">About</string>
     <string name="source_code">Source Code on GitHub</string>
     <string name="close">Close</string>

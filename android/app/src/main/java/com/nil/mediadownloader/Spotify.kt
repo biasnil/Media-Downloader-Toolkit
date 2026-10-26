@@ -50,6 +50,8 @@ data class SpotifyTrack(val title: String, val artists: String = "", val duratio
     val label: String get() = if (artists.isNotBlank()) "$artists - $title" else title
 }
 
+fun SpotifyTrack.queueItem() = QueueItem(title, artists.ifBlank { null })
+
 data class SpotifyPlaylist(val title: String, val tracks: List<SpotifyTrack>)
 
 // ---------------------------------------------------------------- Links + pages
@@ -538,6 +540,7 @@ class SpotifyState {
         if (atOnce > 1) task.addLog(tr(R.string.log_at_once, atOnce))
         val label = { n: Int -> "[${n + 1}/${tracks.size}]" }
         tracker.show(task, label)
+        task.queueItems(tracks.map { it.queueItem() })
         runLimited(task, tracks, atOnce) { n, track ->
             downloadOne(context, track, n, o, existing, tracker, File(workRoot, "$n"), label)
         }
@@ -563,7 +566,9 @@ class SpotifyState {
         val source = task.name
         val fileBase = safeFileName(track.label)
         val name = "$fileBase.${o.format}"
+        var item = track.queueItem()
         if (o.skipExisting && name in existing) {
+            task.end(item)
             task.addLog(tr(R.string.log_skipped_exists, tag, track.label))
             HistoryStore.add(source, track.label, track.link, HistoryStatus.SKIPPED, detail = tr(R.string.already_in_folder), fileName = name)
             tracker.skipped++
@@ -574,6 +579,7 @@ class SpotifyState {
 
         tracker.active[n] = 0f to tr(R.string.status_searching)
         tracker.show(task, label)
+        task.begin(item)
         var videoUrl = ""
         try {
             task.addLog(tr(R.string.log_searching, tag, track.label))
@@ -603,6 +609,8 @@ class SpotifyState {
             }
             val match = best ?: return
             videoUrl = "https://www.youtube.com/watch?v=${match.id}"
+            // The matched video's thumbnail stands in for the album art
+            item.copy(thumbnail = YouTubeLinks.thumbnail(match.id)).let { task.replace(item, it); item = it }
             tracker.update(task, n, 0f, tr(R.string.downloading), label)
 
             val file = withRetries(task, tag) {
@@ -634,6 +642,7 @@ class SpotifyState {
                 tracker.failed++
             }
         } finally {
+            task.end(item)
             tracker.active.remove(n)
             tracker.finished++
             tracker.show(task, label)
@@ -690,6 +699,7 @@ fun SpotifyTab(state: SpotifyState, scope: CoroutineScope, modifier: Modifier = 
     ) {
         UrlHeader(stringResource(R.string.spotify_links_label), idle, onPaste = { state.urlText = appendLine(state.urlText, it) })
         UrlBox(state.urlText, { state.urlText = it }, enabled = idle, placeholder = stringResource(R.string.spotify_placeholder))
+        LinkCards(state.urlText, idle) { state.urlText = it }
         Text(
             stringResource(R.string.spotify_note),
             color = colors.onSurfaceVariant,

@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -14,13 +16,22 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -31,24 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 
-// Same palette as theme.py on desktop
-val YtRed = Color(0xFFFF0000)
-private val LightColors = lightColorScheme(
-    primary = YtRed, onPrimary = Color.White,
-    background = Color(0xFFFFFFFF), surface = Color(0xFFFFFFFF),
-    surfaceVariant = Color(0xFFF2F2F2), outline = Color(0xFFE0E0E0),
-    onBackground = Color(0xFF0F0F0F), onSurface = Color(0xFF0F0F0F),
-    onSurfaceVariant = Color(0xFF606060),
-)
-private val DarkColors = darkColorScheme(
-    primary = YtRed, onPrimary = Color.White,
-    background = Color(0xFF0F0F0F), surface = Color(0xFF0F0F0F),
-    surfaceVariant = Color(0xFF272727), outline = Color(0xFF3F3F3F),
-    onBackground = Color.White, onSurface = Color.White,
-    onSurfaceVariant = Color(0xFFAAAAAA),
-)
-
 private val TABS = listOf(R.string.tab_youtube, R.string.tab_other, R.string.tab_spotify, R.string.tab_utility)
+private val TAB_ICONS = listOf(R.drawable.ic_youtube, R.drawable.ic_globe, R.drawable.ic_spotify, R.drawable.ic_tools)
 
 class MainActivity : ComponentActivity() {
     // Android 12 and older: show the screen in the language picked in Settings
@@ -63,11 +58,17 @@ class MainActivity : ComponentActivity() {
         HistoryStore.init(applicationContext)
         if (Terms.needsAgreement(this)) AppState.showTerms = true
         if (savedInstanceState == null) handleShare(intent)
-        // White status-bar icons on top of the red header
-        enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
+        // Icon colors follow the theme (AppTheme)
+        // Paint the window in the saved theme's color, so a light theme doesn't flash dark
+        val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val theme = AppSettings.theme ?: if (systemDark) ThemeChoice.DARK else ThemeChoice.LIGHT
+        window.setBackgroundDrawable(ColorDrawable(theme.palette.background.toArgb()))
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+        )
         setContent {
-            val dark = AppSettings.darkMode ?: isSystemInDarkTheme()
-            MaterialTheme(colorScheme = if (dark) DarkColors else LightColors) {
+            AppTheme {
                 val context = LocalContext.current
 
                 AskForNotificationPermission()
@@ -102,26 +103,7 @@ class MainActivity : ComponentActivity() {
                 ClipboardWatcher.foundLink?.let { link -> ClipboardQuestion(context, link) }
                 if (AppState.showTerms) TermsScreen(onAgree = { agreed(context) })
 
-                Scaffold(
-                    topBar = {
-                        AppHeader(
-                            dark,
-                            onHistory = { AppState.showHistory = true },
-                            onSettings = { AppState.showSettings = true },
-                        )
-                    },
-                    containerColor = MaterialTheme.colorScheme.background,
-                ) { padding ->
-                    Column(Modifier.padding(padding)) {
-                        PillTabs(TABS.map { stringResource(it) }, AppState.tab, { AppState.tab = it }, Modifier.padding(top = 10.dp))
-                        when (AppState.tab) {
-                            0 -> YouTubeTab(AppState.youtube, AppState.scope)
-                            1 -> OtherSitesTab(AppState.otherSites, AppState.scope)
-                            2 -> SpotifyTab(AppState.spotify, AppState.scope)
-                            else -> UtilityTab(AppState.utility, AppState.scope)
-                        }
-                    }
-                }
+                MainLayout()
             }
         }
     }
@@ -225,43 +207,245 @@ private fun AskForNotificationPermission() {
     }
 }
 
+/** Phones: title + pill tabs. Tablets and wide windows: a side menu, like the tablet mockup. */
 @Composable
-private fun AppHeader(dark: Boolean, onHistory: () -> Unit, onSettings: () -> Unit) {
+private fun MainLayout() {
+    val colors = MaterialTheme.colorScheme
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(colors.background)
+            .systemBarsPadding()
+            .displayCutoutPadding()
+    ) {
+        if (maxWidth >= 840.dp) {
+            Row(Modifier.fillMaxSize()) {
+                SideNav()
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(TABS[AppState.tab]),
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(start = 24.dp, top = 22.dp, bottom = 4.dp),
+                    )
+                    CompositionLocalProvider(LocalWideLayout provides true) {
+                        TabContent(Modifier.padding(horizontal = 8.dp))
+                    }
+                }
+                ActivityPanel()
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                Column(Modifier.weight(1f)) {
+                    if (AppState.showActivity) {
+                        ActivityScreen()
+                    } else {
+                        PhoneHeader()
+                        PillTabs(TABS.map { stringResource(it) }, AppState.tab, { AppState.tab = it }, Modifier.padding(top = 4.dp, bottom = 4.dp), icons = TAB_ICONS)
+                        TabContent()
+                    }
+                }
+                BottomBar()
+            }
+        }
+    }
+}
+
+@Composable
+private fun TabContent(modifier: Modifier = Modifier) {
+    when (AppState.tab) {
+        0 -> YouTubeTab(AppState.youtube, AppState.scope, modifier)
+        1 -> OtherSitesTab(AppState.otherSites, AppState.scope, modifier)
+        2 -> SpotifyTab(AppState.spotify, AppState.scope, modifier)
+        else -> UtilityTab(AppState.utility, AppState.scope, modifier)
+    }
+}
+
+@Composable
+private fun PhoneHeader() {
     Row(
         Modifier
             .fillMaxWidth()
-            .background(YtRed)
-            .statusBarsPadding()
-            .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+            .padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            "▶  Media Downloader",
-            color = Color.White,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
+            "Media Downloader",
+            fontSize = 26.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = (-0.5).sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        IconButton(onClick = onHistory) {
-            Icon(painterResource(R.drawable.ic_history), contentDescription = stringResource(R.string.history_title), tint = Color.White)
+    }
+}
+
+/** Phones: Download (the tabs), Activity, History, Settings, like the mockup. */
+@Composable
+private fun BottomBar() {
+    val colors = MaterialTheme.colorScheme
+    HorizontalDivider(color = colors.outline.copy(alpha = 0.5f))
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(LocalPalette.current.sidebar)
+            .height(68.dp)
+            .selectableGroup(),
+    ) {
+        BarItem(R.drawable.ic_download, stringResource(R.string.nav_download), selected = !AppState.showActivity) {
+            AppState.showActivity = false
         }
-        // Gear icon, like desktop (︎ keeps it a plain symbol instead of an emoji)
-        TextButton(onClick = onSettings, contentPadding = PaddingValues(horizontal = 6.dp)) {
-            Text("⚙︎", color = Color.White, fontSize = 22.sp)
+        BarItem(R.drawable.ic_activity, stringResource(R.string.activity), selected = AppState.showActivity, dot = AppState.anyRunning) {
+            AppState.showActivity = true
         }
-        Text(stringResource(R.string.dark), color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(end = 6.dp))
-        Switch(
-            checked = dark,
-            onCheckedChange = { AppSettings.updateDarkMode(it) },
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = YtRed,
-                checkedTrackColor = Color.White,
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = Color(0xFFCC0000),
-                uncheckedBorderColor = Color.White,
-            ),
+        BarItem(R.drawable.ic_history, stringResource(R.string.history_title), selected = false) { AppState.showHistory = true }
+        BarItem(R.drawable.ic_settings, stringResource(R.string.settings_title), selected = false) { AppState.showSettings = true }
+    }
+}
+
+@Composable
+private fun RowScope.BarItem(icon: Int, label: String, selected: Boolean, dot: Boolean = false, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val tint = if (selected) colors.primary else colors.onSurfaceVariant
+    Column(
+        Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .selectable(selected = selected, role = Role.Tab, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box {
+            Icon(painterResource(icon), null, tint = tint, modifier = Modifier.size(22.dp))
+            // Something is downloading
+            if (dot) Box(Modifier.align(Alignment.TopEnd).offset(x = 4.dp, y = (-2).dp).size(8.dp).background(colors.primary, CircleShape))
+        }
+        Text(
+            label,
+            color = tint,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+}
+
+/** Phones: the big ring, Up next and the log for whichever tab is picked at the top. */
+@Composable
+private fun ActivityScreen() {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Text(
+            stringResource(R.string.activity),
+            fontSize = 26.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = (-0.5).sp,
+            modifier = Modifier.padding(start = 20.dp, top = 12.dp, bottom = 10.dp),
+        )
+        PillTabs(TABS.map { stringResource(it) }, AppState.tab, { AppState.tab = it }, Modifier.padding(bottom = 18.dp), icons = TAB_ICONS)
+        Column(Modifier.padding(horizontal = 20.dp)) {
+            key(AppState.tab) {
+                ProgressAndLog(
+                    AppState.tasks[AppState.tab], AppState.scope,
+                    showUpdate = AppState.tab != 3, inPanel = true, onCancel = { AppState.cancelTab(AppState.tab) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SideNav() {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        Modifier
+            .width(232.dp)
+            .fillMaxHeight()
+            .background(LocalPalette.current.sidebar)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 14.dp, vertical = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(Modifier.padding(start = 8.dp, bottom = 22.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(38.dp).background(colors.primary, RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center,
+            ) { Icon(painterResource(R.drawable.ic_download), null, tint = colors.onPrimary, modifier = Modifier.size(20.dp)) }
+            Spacer(Modifier.width(10.dp))
+            Text("Media\nDownloader", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 19.sp)
+        }
+        NavHeading(stringResource(R.string.nav_sources))
+        TABS.forEachIndexed { i, label ->
+            NavItem(TAB_ICONS[i], stringResource(label), selected = AppState.tab == i) { AppState.tab = i }
+        }
+        NavHeading(stringResource(R.string.nav_library), Modifier.padding(top = 18.dp))
+        NavItem(R.drawable.ic_history, stringResource(R.string.history_title), selected = false) { AppState.showHistory = true }
+        NavItem(R.drawable.ic_settings, stringResource(R.string.settings_title), selected = false) { AppState.showSettings = true }
+    }
+}
+
+/** Tablets: the open tab's status and log, on the right like the mockup's queue panel. */
+@Composable
+private fun ActivityPanel() {
+    val task = AppState.tasks[AppState.tab]
+    Column(
+        Modifier
+            .width(340.dp)
+            .fillMaxHeight()
+            .background(LocalPalette.current.sidebar)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp, vertical = 22.dp),
+    ) {
+        Text(
+            stringResource(R.string.activity),
+            fontSize = 20.sp,
+            fontWeight = FontWeight.ExtraBold,
+            modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 14.dp),
+        )
+        // key: each tab keeps its own log scroll and fold state
+        key(AppState.tab) {
+            ProgressAndLog(
+                task, AppState.scope,
+                showUpdate = AppState.tab != 3, inPanel = true, onCancel = { AppState.cancelTab(AppState.tab) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun NavHeading(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.2.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.padding(start = 12.dp, bottom = 4.dp),
+    )
+}
+
+@Composable
+private fun NavItem(icon: Int, label: String, selected: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) colors.surfaceVariant else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(painterResource(icon), null, tint = if (selected) colors.primary else colors.onSurfaceVariant, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(
+            label,
+            fontSize = 15.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+            color = if (selected) colors.onBackground else colors.onSurfaceVariant,
         )
     }
 }

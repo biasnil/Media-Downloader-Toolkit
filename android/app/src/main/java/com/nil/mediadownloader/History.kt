@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -248,11 +249,11 @@ fun HistoryScreen(onDownloadAgain: (String) -> Unit, onClose: () -> Unit) {
         onClose = onClose,
         actions = {
             if (selecting) {
-                TextButton(onClick = { finishSelecting() }) { Text(stringResource(R.string.cancel), color = Color.White) }
+                TextButton(onClick = { finishSelecting() }) { Text(stringResource(R.string.cancel), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
             } else {
                 Box {
                     TextButton(onClick = { menuOpen = true }, enabled = HistoryStore.entries.isNotEmpty()) {
-                        Text("⋮", color = Color.White, fontSize = 22.sp)
+                        Icon(painterResource(R.drawable.ic_more), contentDescription = null)
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         MenuItem(stringResource(R.string.history_select)) { menuOpen = false; selecting = true }
@@ -269,9 +270,9 @@ fun HistoryScreen(onDownloadAgain: (String) -> Unit, onClose: () -> Unit) {
                             menuOpen = false
                             HistoryStore.removeWhere { it.status == HistoryStatus.SKIPPED }
                         }
-                        MenuItem(stringResource(R.string.clear_all_menu), YtRed) { menuOpen = false; confirm = HistoryConfirm.CLEAR_ALL }
+                        MenuItem(stringResource(R.string.clear_all_menu), MaterialTheme.colorScheme.error) { menuOpen = false; confirm = HistoryConfirm.CLEAR_ALL }
                         HorizontalDivider()
-                        MenuItem(stringResource(R.string.delete_all_files_menu), YtRed) {
+                        MenuItem(stringResource(R.string.delete_all_files_menu), MaterialTheme.colorScheme.error) {
                             menuOpen = false
                             confirm = HistoryConfirm.DELETE_ALL_DOWNLOADED
                         }
@@ -297,7 +298,7 @@ fun HistoryScreen(onDownloadAgain: (String) -> Unit, onClose: () -> Unit) {
                     ) {
                         Text(
                             stringResource(R.string.remove_count, selection.size),
-                            color = if (selection.isNotEmpty()) YtRed else colors.onSurfaceVariant,
+                            color = if (selection.isNotEmpty()) MaterialTheme.colorScheme.error else colors.onSurfaceVariant,
                         )
                     }
                 }
@@ -362,7 +363,7 @@ fun HistoryScreen(onDownloadAgain: (String) -> Unit, onClose: () -> Unit) {
                             HistoryStore.deleteFiles(context, HistoryStore.entries.filter { it.status == HistoryStatus.DONE }.map { it.id })
                     }
                     confirm = null
-                }) { Text(button, color = YtRed) }
+                }) { Text(button, color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirm = null }) { Text(stringResource(R.string.cancel)) } },
         )
@@ -383,8 +384,8 @@ private fun HistoryRow(
     var menu by remember { mutableStateOf(false) }
     val fileExists = remember(entry.id) { entry.fileUri?.let { SavedFiles.exists(context, it) } == true }
     val (symbol, tint) = when (entry.status) {
-        HistoryStatus.DONE -> "✓" to Color(0xFF2E9E44)
-        HistoryStatus.FAILED -> "✕" to YtRed
+        HistoryStatus.DONE -> "✓" to LocalPalette.current.success
+        HistoryStatus.FAILED -> "✕" to MaterialTheme.colorScheme.error
         HistoryStatus.SKIPPED -> "↷" to colors.onSurfaceVariant
         HistoryStatus.CANCELLED -> "–" to colors.onSurfaceVariant
     }
@@ -437,9 +438,9 @@ private fun HistoryRow(
                 MenuItem(stringResource(R.string.share_file)) { menu = false; SavedFiles.share(context, entry.fileUri, name) }
             }
             HorizontalDivider()
-            MenuItem(stringResource(R.string.remove_from_history), YtRed) { menu = false; HistoryStore.remove(listOf(entry.id)) }
+            MenuItem(stringResource(R.string.remove_from_history), MaterialTheme.colorScheme.error) { menu = false; HistoryStore.remove(listOf(entry.id)) }
             if (fileExists) {
-                MenuItem(stringResource(R.string.delete_file), YtRed) { menu = false; HistoryStore.deleteFiles(context, listOf(entry.id)) }
+                MenuItem(stringResource(R.string.delete_file), MaterialTheme.colorScheme.error) { menu = false; HistoryStore.deleteFiles(context, listOf(entry.id)) }
             }
         }
     }

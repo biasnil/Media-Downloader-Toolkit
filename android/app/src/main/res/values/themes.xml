@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <style name="Theme.MediaDownloader" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Dark, so the default theme opens without a white flash; MainActivity then paints the saved theme's color -->
+    <style name="Theme.MediaDownloader" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/launch_background</item>
+    </style>
 </resources>
