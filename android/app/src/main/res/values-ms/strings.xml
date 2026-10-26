@@ -266,6 +266,24 @@
     <string name="follow_phone_setting">Ikut tetapan telefon</string>
     <string name="light">Cerah</string>
     <string name="dark_theme">Gelap</string>
+    <string name="theme_default">Lalai</string>
+    <string name="theme_sakura">Sakura</string>
+    <string name="theme_blue">Biru</string>
+    <string name="view_log">Lihat log</string>
+    <string name="hide_log">Sembunyi log</string>
+    <string name="nav_sources">SUMBER</string>
+    <string name="nav_library">PUSTAKA</string>
+    <string name="activity">Aktiviti</string>
+    <string name="ready_to_download">Sedia dimuat turun</string>
+    <string name="remove_link">Buang pautan</string>
+    <string name="nothing_downloading">Tiada muat turun</string>
+    <string name="up_next">SETERUSNYA</string>
+    <string name="more_count">+%1$d lagi</string>
+    <string name="nav_download">Muat turun</string>
+    <plurals name="link_count">
+        <item quantity="one">%1$d pautan</item>
+        <item quantity="other">%1$d pautan</item>
+    </plurals>
     <string name="about">Perihal</string>
     <string name="source_code">Kod Sumber di GitHub</string>
     <string name="close">Tutup</string>

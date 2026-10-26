@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -25,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -309,7 +311,7 @@ fun UtilityTab(state: UtilityState, scope: CoroutineScope, modifier: Modifier = 
             state.files.toList().forEach { f ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(f.name, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { state.files.remove(f) }, enabled = idle) { Text("✕", color = YtRed) }
+                    TextButton(onClick = { state.files.remove(f) }, enabled = idle) { Icon(painterResource(R.drawable.ic_close), contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)) }
                 }
             }
         }
@@ -354,14 +356,14 @@ private fun ToolChips(selected: Tool, enabled: Boolean, onSelect: (Tool) -> Unit
             val on = t == selected
             Text(
                 stringResource(t.label),
-                color = if (on) Color.White else colors.onSurface,
+                color = if (on) colors.onPrimary else colors.onSurface,
                 fontSize = 13.sp,
                 fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (on) YtRed else colors.surfaceVariant)
+                    .clip(PillShape)
+                    .background(if (on) colors.primary else colors.surfaceContainer)
                     .clickable(enabled = enabled) { onSelect(t) }
-                    .padding(horizontal = 14.dp, vertical = 7.dp),
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
             )
         }
     }

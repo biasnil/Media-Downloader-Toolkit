@@ -11,26 +11,41 @@ import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -96,6 +111,9 @@ fun appendLine(box: String, text: String): String =
 
 // ---------------------------------------------------------------- Job state + helpers
 
+/** One file in the progress ring and the Up next list. */
+data class QueueItem(val title: String, val detail: String? = null, val thumbnail: String? = null)
+
 /** Progress/status/log for one tab. Kept above the tabs so switching tabs doesn't lose it. */
 class TaskState(@param:StringRes private val nameRes: Int) {
     /** The tab's name, e.g. "YouTube" (for notifications and History). */
@@ -111,6 +129,31 @@ class TaskState(@param:StringRes private val nameRes: Int) {
     val processIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** FFmpeg processes the Utility tab is running, so Cancel can stop them too. */
     val nativeProcesses: MutableSet<Process> = ConcurrentHashMap.newKeySet()
+
+    /** What's downloading now (the latest one to start) and what's still waiting. */
+    var current by mutableStateOf<QueueItem?>(null)
+    val upNext = mutableStateListOf<QueueItem>()
+
+    fun queueItems(items: List<QueueItem>) {
+        current = null
+        upNext.clear()
+        upNext.addAll(items)
+    }
+
+    fun begin(item: QueueItem) {
+        upNext.remove(item)
+        current = item
+    }
+
+    /** Swaps in a fuller [new] version of [old] (e.g. once a thumbnail is known). */
+    fun replace(old: QueueItem, new: QueueItem) {
+        if (current == old) current = new
+    }
+
+    fun end(item: QueueItem) {
+        upNext.remove(item)
+        if (current == item) current = null
+    }
 
     /** Adds a log line, keeping the last 500. */
     fun addLog(line: String) {
@@ -130,6 +173,7 @@ fun startJob(context: Context, task: TaskState) {
 fun endJob(context: Context, task: TaskState) {
     task.running = false
     task.progress = 0f
+    task.queueItems(emptyList())
     DownloadService.finish(context.applicationContext, task)
 }
 
@@ -281,44 +325,151 @@ fun openFolder(context: Context, uri: Uri?) {
 
 // ---------------------------------------------------------------- Shared widgets
 
+val PillShape = RoundedCornerShape(50)
+val CardShape = RoundedCornerShape(18.dp)
+
 @Composable
 fun SectionLabel(text: String, modifier: Modifier = Modifier) {
-    Text(text, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = modifier.padding(top = 12.dp, bottom = 4.dp))
+    Text(text, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = modifier.padding(top = 14.dp, bottom = 6.dp))
+}
+
+/** A rounded card on the theme's card color. */
+@Composable
+fun AppCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(CardShape)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(14.dp),
+        content = content,
+    )
+}
+
+/** Round icon button on a card-colored circle, for the header. */
+@Composable
+fun RoundIconButton(@DrawableRes icon: Int, description: String, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.size(44.dp),
+        colors = IconButtonDefaults.iconButtonColors(containerColor = colors.surfaceContainer, contentColor = colors.onBackground),
+    ) { Icon(painterResource(icon), contentDescription = description, modifier = Modifier.size(20.dp)) }
 }
 
 @Composable
-fun SecondaryButton(text: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
+fun SecondaryButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    @DrawableRes icon: Int? = null,
+    onClick: () -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier,
-        shape = RoundedCornerShape(8.dp),
+        modifier = modifier.heightIn(min = 44.dp),
+        shape = PillShape,
         border = BorderStroke(1.dp, colors.outline),
-    ) { Text(text, color = if (enabled) colors.onSurface else colors.onSurfaceVariant) }
-}
-
-@Composable
-fun PrimaryButton(text: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
-    Button(onClick = onClick, enabled = enabled, modifier = modifier, shape = RoundedCornerShape(8.dp)) {
-        Text(text, fontWeight = FontWeight.Bold)
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+        val tint = if (enabled) colors.onSurface else colors.onSurfaceVariant
+        if (icon != null) {
+            Icon(painterResource(icon), null, tint = tint, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(text, color = tint, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
-/** Small red text button, like the Paste / Clear / Report links on iOS. */
+@Composable
+fun PrimaryButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    @DrawableRes icon: Int? = null,
+    onClick: () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.heightIn(min = 48.dp),
+        shape = PillShape,
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
+    ) {
+        if (icon != null) {
+            Icon(painterResource(icon), null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(text, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** Small accent-colored text button, like the Paste / Clear / Report links on iOS. */
 @Composable
 fun SmallLink(text: String, enabled: Boolean = true, onClick: () -> Unit) {
     TextButton(onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 8.dp)) {
-        Text(text, color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Text(
+            text,
+            color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+/** One pill in a row of choices (formats, qualities). */
+@Composable
+fun ChoiceChip(text: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val faded = if (enabled) 1f else 0.5f
+    Box(
+        Modifier
+            .heightIn(min = 40.dp)
+            .clip(PillShape)
+            .background(if (selected) colors.primary.copy(alpha = faded) else Color.Transparent)
+            .border(1.dp, if (selected) Color.Transparent else colors.outline, PillShape)
+            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            color = (if (selected) colors.onPrimary else colors.onSurface).copy(alpha = faded),
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+        )
+    }
+}
+
+/** Wrapping row of [ChoiceChip]s; reports the index picked. */
+@Composable
+fun ChipRow(options: List<String>, selected: Int, enabled: Boolean, onSelect: (Int) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEachIndexed { i, option -> ChoiceChip(option, i == selected, enabled) { onSelect(i) } }
     }
 }
 
 /** Dropdown button showing options[selected]; reports the index picked. */
 @Composable
 fun Picker(selected: Int, options: List<String>, enabled: Boolean, onSelect: (Int) -> Unit) {
+    val colors = MaterialTheme.colorScheme
     var open by remember { mutableStateOf(false) }
     Box {
-        SecondaryButton("${options.getOrElse(selected) { options.first() }}  ▾", enabled = enabled) { open = true }
+        OutlinedButton(
+            onClick = { open = true },
+            enabled = enabled,
+            modifier = Modifier.heightIn(min = 40.dp),
+            shape = PillShape,
+            border = BorderStroke(1.dp, colors.outline),
+            contentPadding = PaddingValues(start = 16.dp, end = 12.dp),
+        ) {
+            val tint = if (enabled) colors.onSurface else colors.onSurfaceVariant
+            Text(options.getOrElse(selected) { options.first() }, color = tint, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(6.dp))
+            Icon(painterResource(R.drawable.ic_chevron_down), null, tint = tint, modifier = Modifier.size(16.dp))
+        }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             options.forEachIndexed { i, option ->
                 DropdownMenuItem(text = { Text(option) }, onClick = { onSelect(i); open = false })
@@ -329,26 +480,32 @@ fun Picker(selected: Int, options: List<String>, enabled: Boolean, onSelect: (In
 
 @Composable
 fun CheckRow(text: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = checked, onCheckedChange = onChange, enabled = enabled)
-        Text(text)
+    Row(
+        Modifier.toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onChange),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null, enabled = enabled, modifier = Modifier.padding(12.dp))
+        Text(text, fontWeight = FontWeight.Medium)
     }
 }
 
 @Composable
 fun RadioRow(text: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected = selected, onClick = onClick, enabled = enabled)
+    Row(
+        Modifier.selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null, enabled = enabled, modifier = Modifier.padding(12.dp))
         Text(text)
     }
 }
 
-/** ⓘ button: tap to read a longer explanation. */
+/** Info button: tap to read a longer explanation. */
 @Composable
 fun InfoButton(text: String) {
     var shown by remember { mutableStateOf(false) }
-    TextButton(onClick = { shown = true }, contentPadding = PaddingValues(0.dp), modifier = Modifier.size(36.dp)) {
-        Text("ⓘ", color = MaterialTheme.colorScheme.primary, fontSize = 18.sp)
+    IconButton(onClick = { shown = true }, modifier = Modifier.size(44.dp)) {
+        Icon(painterResource(R.drawable.ic_info), contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
     }
     if (shown) {
         AlertDialog(
@@ -359,7 +516,7 @@ fun InfoButton(text: String) {
     }
 }
 
-/** Settings section title with an ⓘ at the end. */
+/** Settings section title with an info button at the end. */
 @Composable
 fun InfoHeader(title: String, info: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -368,37 +525,46 @@ fun InfoHeader(title: String, info: String) {
     }
 }
 
-/** Pill-style switcher, like the one under the desktop header. */
+/** Row of pill tabs, scrolling sideways when they don't fit. [icons] go before the names. */
 @Composable
-fun PillTabs(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+fun PillTabs(
+    options: List<String>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    icons: List<Int>? = null,
+) {
     val colors = MaterialTheme.colorScheme
-    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-        Row(
-            Modifier
-                .padding(horizontal = 8.dp)
-                .horizontalScroll(rememberScrollState()) // scrolls sideways when the tabs don't fit
-                .background(colors.surfaceVariant, RoundedCornerShape(8.dp))
-                .padding(3.dp)
-        ) {
-            options.forEachIndexed { i, name ->
-                val isSelected = i == selected
-                Text(
-                    name,
-                    color = if (isSelected) Color.White else colors.onSurface,
-                    fontSize = 14.sp,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(if (isSelected) YtRed else Color.Transparent)
-                        .clickable { onSelect(i) }
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                )
+    Row(
+        modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        options.forEachIndexed { i, name ->
+            val isSelected = i == selected
+            val fg = if (isSelected) colors.onPrimary else colors.onSurface
+            Row(
+                Modifier
+                    .heightIn(min = 40.dp)
+                    .clip(PillShape)
+                    .background(if (isSelected) colors.primary else colors.surfaceContainer)
+                    .selectable(selected = isSelected, role = Role.Tab) { onSelect(i) }
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                icons?.getOrNull(i)?.let {
+                    Icon(painterResource(it), null, tint = fg, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(name, color = fg, fontSize = 14.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold)
             }
         }
     }
 }
 
-/** A full-screen page with a red title bar (History, Terms, Privacy...). [onClose] null = can't be closed. */
+/** A full-screen page with a back button and big title (History, Terms, Privacy...). [onClose] null = can't be closed. */
 @Composable
 fun FullScreenPage(
     title: String,
@@ -420,21 +586,21 @@ fun FullScreenPage(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .background(YtRed)
-                        .heightIn(min = 52.dp)
+                        .heightIn(min = 60.dp)
                         .padding(horizontal = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (onClose != null) {
-                        TextButton(onClick = onClose) { Text(stringResource(R.string.done), color = Color.White, fontWeight = FontWeight.Bold) }
+                        IconButton(onClick = onClose) {
+                            Icon(painterResource(R.drawable.ic_back), contentDescription = stringResource(R.string.done))
+                        }
                     } else {
-                        Spacer(Modifier.width(12.dp))
+                        Spacer(Modifier.width(16.dp))
                     }
                     Text(
                         title,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 17.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 22.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
@@ -452,14 +618,26 @@ fun FullScreenPage(
 @Composable
 fun UrlHeader(label: String, enabled: Boolean, onPaste: (String) -> Unit, extra: @Composable () -> Unit = {}) {
     val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
     Row(verticalAlignment = Alignment.CenterVertically) {
         SectionLabel(label, Modifier.weight(1f))
         extra()
-        SmallLink(stringResource(R.string.paste), enabled = enabled) {
-            val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
-            val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
-            ClipboardWatcher.markSeen(context) // already pasted, so don't also offer it on return
-            if (!text.isNullOrBlank()) onPaste(text.trim())
+        TextButton(
+            onClick = {
+                val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
+                val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+                ClipboardWatcher.markSeen(context) // already pasted, so don't also offer it on return
+                if (!text.isNullOrBlank()) onPaste(text.trim())
+            },
+            enabled = enabled,
+            shape = PillShape,
+            colors = ButtonDefaults.textButtonColors(containerColor = colors.surfaceContainer),
+            contentPadding = PaddingValues(horizontal = 14.dp),
+        ) {
+            val tint = if (enabled) colors.primary else colors.onSurfaceVariant
+            Icon(painterResource(R.drawable.ic_paste), null, tint = tint, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(stringResource(R.string.paste), color = tint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -473,16 +651,20 @@ fun UrlBox(value: String, onChange: (String) -> Unit, enabled: Boolean, placehol
         enabled = enabled,
         modifier = Modifier.fillMaxWidth().height(120.dp),
         placeholder = { Text(placeholder) },
+        leadingIcon = { Icon(painterResource(R.drawable.ic_link), null, modifier = Modifier.size(20.dp)) },
+        shape = RoundedCornerShape(16.dp),
         colors = OutlinedTextFieldDefaults.colors(
-            focusedContainerColor = colors.surfaceVariant,
-            unfocusedContainerColor = colors.surfaceVariant,
-            disabledContainerColor = colors.surfaceVariant,
-            unfocusedBorderColor = colors.outline,
+            focusedContainerColor = colors.surfaceContainer,
+            unfocusedContainerColor = colors.surfaceContainer,
+            disabledContainerColor = colors.surfaceContainer,
+            unfocusedBorderColor = Color.Transparent,
+            disabledBorderColor = Color.Transparent,
+            focusedBorderColor = colors.primary,
         ),
     )
 }
 
-/** Format + Quality pickers and "Skip files that already exist", saved to the tab's [prefs]. */
+/** Format + Quality choices and "Skip files that already exist", saved to the tab's [prefs]. */
 @Composable
 fun FormatOptions(
     prefs: SharedPreferences,
@@ -498,39 +680,36 @@ fun FormatOptions(
     var skipExisting by remember { mutableStateOf(prefs.getBoolean("skip_existing", true)) }
     val bestAvailable = stringResource(R.string.best_available)
 
-    Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(stringResource(R.string.label_format), Modifier.width(72.dp))
-        Picker(formats.indexOfFirst { it.second == format }, formats.map { stringResource(it.first) }, enabled) { i ->
-            format = formats[i].second
-            prefs.edit().putString("format", format).apply()
-        }
+    SectionLabel(stringResource(R.string.label_format).removeSuffix(":"))
+    ChipRow(formats.map { stringResource(it.first) }, formats.indexOfFirst { it.second == format }, enabled) { i ->
+        format = formats[i].second
+        prefs.edit().putString("format", format).apply()
     }
-    Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(stringResource(R.string.label_quality), Modifier.width(72.dp))
-        when (format) {
-            "mp3" -> Picker(MP3_QUALITIES.indexOfFirst { it.first == mp3Quality }, MP3_QUALITIES.map { it.first }, enabled) { i ->
-                mp3Quality = MP3_QUALITIES[i].first
-                prefs.edit().putString("mp3_quality", mp3Quality).apply()
-            }
-            "mp4" -> Picker(
-                MP4_QUALITIES.indexOfFirst { it.first == mp4Quality },
-                MP4_QUALITIES.map { if (it.second == "best") bestAvailable else it.first },
-                enabled,
-            ) { i ->
-                mp4Quality = MP4_QUALITIES[i].first
-                prefs.edit().putString("mp4_quality", mp4Quality).apply()
-            }
-            "wav" -> Text(stringResource(R.string.lossless_wav), color = colors.onSurfaceVariant)
-            else -> Text(m4aNote, color = colors.onSurfaceVariant)
+    SectionLabel(stringResource(R.string.label_quality).removeSuffix(":"))
+    when (format) {
+        "mp3" -> ChipRow(MP3_QUALITIES.map { it.first }, MP3_QUALITIES.indexOfFirst { it.first == mp3Quality }, enabled) { i ->
+            mp3Quality = MP3_QUALITIES[i].first
+            prefs.edit().putString("mp3_quality", mp3Quality).apply()
         }
+        "mp4" -> ChipRow(
+            MP4_QUALITIES.map { if (it.second == "best") bestAvailable else it.first },
+            MP4_QUALITIES.indexOfFirst { it.first == mp4Quality },
+            enabled,
+        ) { i ->
+            mp4Quality = MP4_QUALITIES[i].first
+            prefs.edit().putString("mp4_quality", mp4Quality).apply()
+        }
+        "wav" -> Text(stringResource(R.string.lossless_wav), color = colors.onSurfaceVariant, fontSize = 14.sp)
+        else -> Text(m4aNote, color = colors.onSurfaceVariant, fontSize = 14.sp)
     }
+    Spacer(Modifier.height(4.dp))
     CheckRow(stringResource(R.string.skip_existing), skipExisting, enabled) {
         skipExisting = it
         prefs.edit().putBoolean("skip_existing", it).apply()
     }
 }
 
-/** "Save to" row with Browse... and a way back to the default folder. */
+/** "Save to" card with Browse... and a way back to the default folder. */
 @Composable
 fun SaveFolderRow(folder: Uri?, enabled: Boolean, onChange: (Uri?) -> Unit) {
     val context = LocalContext.current
@@ -543,24 +722,21 @@ fun SaveFolderRow(folder: Uri?, enabled: Boolean, onChange: (Uri?) -> Unit) {
             onChange(uri)
         }
     }
-    SectionLabel(stringResource(R.string.save_to))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            folderLabel(folder),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            fontSize = 14.sp,
-            modifier = Modifier
-                .weight(1f)
-                .background(colors.surfaceVariant, RoundedCornerShape(8.dp))
-                .padding(12.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        SecondaryButton(stringResource(R.string.browse), enabled = enabled) { picker.launch(null) }
-    }
-    if (folder != null) {
-        TextButton(onClick = { onChange(null) }, enabled = enabled, contentPadding = PaddingValues(0.dp)) {
-            Text(stringResource(R.string.use_default_folder), color = colors.primary, fontSize = 13.sp)
+    AppCard(Modifier.padding(top = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(R.drawable.ic_folder), null, tint = colors.onSurfaceVariant, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(stringResource(R.string.save_to), color = colors.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text(folderLabel(folder), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(8.dp))
+            SecondaryButton(stringResource(R.string.browse), enabled = enabled) { picker.launch(null) }
+        }
+        if (folder != null) {
+            TextButton(onClick = { onChange(null) }, enabled = enabled, contentPadding = PaddingValues(horizontal = 34.dp)) {
+                Text(stringResource(R.string.use_default_folder), color = colors.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
@@ -584,36 +760,76 @@ fun ActionButtons(
                 else -> idleText
             }
         ),
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp).heightIn(min = 54.dp),
         enabled = !task.running && !Downloader.updating,
+        icon = R.drawable.ic_download,
         onClick = onDownload,
     )
-    Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SecondaryButton(stringResource(R.string.cancel), Modifier.weight(1f), enabled = task.running, onClick = onCancel)
-        SecondaryButton(stringResource(R.string.open_folder), Modifier.weight(1f)) { openFolder(context, folder) }
+    Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        SecondaryButton(stringResource(R.string.cancel), Modifier.weight(1f), enabled = task.running, icon = R.drawable.ic_close, onClick = onCancel)
+        SecondaryButton(stringResource(R.string.open_folder), Modifier.weight(1f), icon = R.drawable.ic_folder) { openFolder(context, folder) }
     }
 }
 
-/** Progress bar, status line, Report / Clear / Update yt-dlp, and the log box. */
+/** True on tablets, where status and log show in a panel beside the tab instead of under it. */
+val LocalWideLayout = compositionLocalOf { false }
+
+/**
+ * Status card with the progress bar, then Report / Clear / Update yt-dlp and the log, which folds away.
+ * On tablets the tabs' own copy is hidden: [inPanel] = true draws the big version (ring, Cancel,
+ * Up next, log open) for the Activity panel and the phone's Activity screen.
+ */
 @Composable
-fun ProgressAndLog(task: TaskState, scope: CoroutineScope, showUpdate: Boolean = true) {
+fun ProgressAndLog(
+    task: TaskState,
+    scope: CoroutineScope,
+    showUpdate: Boolean = true,
+    inPanel: Boolean = false,
+    onCancel: (() -> Unit)? = null,
+) {
+    if (LocalWideLayout.current && !inPanel) return
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
     val logScroll = rememberScrollState()
     var report by remember { mutableStateOf<ProblemReport?>(null) }
-    LaunchedEffect(task.log.size, logScroll.maxValue) { logScroll.animateScrollTo(logScroll.maxValue) }
+    var logShown by rememberSaveable { mutableStateOf(inPanel) }
+    LaunchedEffect(task.log.size, logScroll.maxValue, logShown) { logScroll.animateScrollTo(logScroll.maxValue) }
     report?.let { ReportProblemDialog(it) { report = null } }
 
-    LinearProgressIndicator(
-        progress = { task.progress },
-        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-        color = colors.primary,
-        trackColor = colors.surfaceVariant,
-    )
-    Text(task.status, color = colors.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp))
+    if (inPanel) {
+        NowDownloading(task, onCancel)
+        UpNext(task)
+    } else {
+        AppCard(Modifier.padding(top = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val current = task.current
+                if (task.running) {
+                    ProgressRing(current?.thumbnail, task.progress, 52.dp)
+                } else {
+                    Box(Modifier.size(8.dp).background(LocalPalette.current.success, PillShape))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    if (task.running && current != null) {
+                        Text(current.title, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Text(task.status, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = if (task.running) colors.onSurfaceVariant else colors.onSurface)
+                }
+            }
+            ProgressBar(task.progress, Modifier.padding(top = 12.dp))
+        }
+    }
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        SectionLabel(stringResource(R.string.log), Modifier.weight(1f))
+    Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        TextButton(onClick = { logShown = !logShown }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+            Text(
+                stringResource(if (logShown) R.string.hide_log else R.string.view_log) + if (task.log.isEmpty()) "" else " (${task.log.size})",
+                color = colors.onSurface,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+            )
+        }
+        Spacer(Modifier.weight(1f))
         // The last lines of the log show what went wrong
         SmallLink(stringResource(R.string.report)) { report = ProblemReport(task.log.takeLast(30).joinToString("\n")) }
         SmallLink(stringResource(R.string.clear), enabled = !task.running && task.log.isNotEmpty()) { task.log.clear() }
@@ -628,15 +844,117 @@ fun ProgressAndLog(task: TaskState, scope: CoroutineScope, showUpdate: Boolean =
             }
         }
     }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .height(220.dp)
-            .padding(bottom = 16.dp)
-            .background(colors.surfaceVariant, RoundedCornerShape(8.dp))
-            .verticalScroll(logScroll)
-            .padding(10.dp)
-    ) {
-        task.log.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 12.sp) }
+    if (logShown) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .height(if (inPanel) 360.dp else 220.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(LocalPalette.current.sidebar)
+                .border(1.dp, colors.outline, RoundedCornerShape(14.dp))
+                .verticalScroll(logScroll)
+                .padding(12.dp)
+        ) {
+            task.log.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = colors.onSurfaceVariant) }
+        }
+    }
+    Spacer(Modifier.height(24.dp))
+}
+
+@Composable
+private fun ProgressBar(progress: Float, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    LinearProgressIndicator(
+        progress = { progress },
+        modifier = modifier.fillMaxWidth().height(6.dp).clip(PillShape),
+        color = colors.primary,
+        trackColor = colors.surfaceVariant,
+        gapSize = 0.dp,
+        drawStopIndicator = {},
+    )
+}
+
+/** Round thumbnail with the progress drawn around it, like the mockup. */
+@Composable
+fun ProgressRing(thumbnail: String?, progress: Float, size: Dp) {
+    val colors = MaterialTheme.colorScheme
+    val stroke = size * 0.05f
+    Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = stroke.toPx()
+            val arcSize = Size(this.size.width - w, this.size.height - w)
+            val topLeft = Offset(w / 2, w / 2)
+            drawArc(colors.surfaceVariant, 0f, 360f, false, topLeft, arcSize, style = Stroke(w))
+            drawArc(colors.primary, -90f, 360f * progress.coerceIn(0f, 1f), false, topLeft, arcSize, style = Stroke(w, cap = StrokeCap.Round))
+        }
+        Thumbnail(thumbnail, Modifier.fillMaxSize().padding(stroke * 2).clip(CircleShape))
+    }
+}
+
+/** The big ring, title, status, progress bar and Cancel. */
+@Composable
+private fun NowDownloading(task: TaskState, onCancel: (() -> Unit)?) {
+    val colors = MaterialTheme.colorScheme
+    val current = task.current
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        ProgressRing(current?.thumbnail, task.progress, 184.dp)
+        Text(
+            current?.title ?: if (task.running) task.name else stringResource(R.string.nothing_downloading),
+            fontSize = 18.sp,
+            fontWeight = FontWeight.ExtraBold,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 16.dp),
+        )
+        current?.detail?.let {
+            Text(it, color = colors.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+        }
+        Text(
+            task.status,
+            color = colors.onSurfaceVariant,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        ProgressBar(task.progress, Modifier.padding(top = 14.dp))
+        if (onCancel != null) {
+            FilledIconButton(
+                onClick = onCancel,
+                enabled = task.running,
+                modifier = Modifier.padding(top = 16.dp).size(56.dp),
+            ) { Icon(painterResource(R.drawable.ic_close), contentDescription = stringResource(R.string.cancel)) }
+        }
+    }
+}
+
+/** What's still waiting, under the ring. */
+@Composable
+private fun UpNext(task: TaskState) {
+    if (task.upNext.isEmpty()) return
+    val colors = MaterialTheme.colorScheme
+    val shown = task.upNext.take(8)
+    Text(
+        stringResource(R.string.up_next),
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.2.sp,
+        color = colors.onSurfaceVariant,
+        modifier = Modifier.padding(top = 22.dp, bottom = 8.dp),
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        shown.forEach { item ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Thumbnail(item.thumbnail, Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)))
+                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                    Text(item.title, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    item.detail?.let { Text(it, fontSize = 12.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                }
+            }
+        }
+        if (task.upNext.size > shown.size) {
+            Text(stringResource(R.string.more_count, task.upNext.size - shown.size), fontSize = 12.sp, color = colors.onSurfaceVariant)
+        }
     }
 }

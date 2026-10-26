@@ -89,9 +89,12 @@ object Downloader {
             val parts = line.split('\t', limit = 4)
             val link = parts.getOrNull(0)?.trim().orEmpty()
             parts.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() && it != "NA" }?.let { playlistTitle = it }
+            val entryUrl = if (link.startsWith("http")) link else url
+            // Mixes and some playlists list no thumbnail; every YouTube video has one at a fixed address
             val thumbnail = parts.getOrNull(2)?.trim()?.takeIf { it.startsWith("http") }
+                ?: YouTubeLinks.videoId(entryUrl)?.takeIf { YouTubeLinks.isYouTube(entryUrl) }?.let { YouTubeLinks.thumbnail(it) }
             val title = parts.getOrNull(3)?.trim()?.takeIf { it.isNotEmpty() && it != "NA" } ?: tr(R.string.untitled)
-            VideoEntry(if (link.startsWith("http")) link else url, title, thumbnail)
+            VideoEntry(entryUrl, title, thumbnail)
         }
         return LinkInfo(playlistTitle, entries)
     }
